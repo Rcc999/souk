@@ -3,29 +3,18 @@
 
 module lending::nft_lending {
     use sui::kiosk::{Self, Kiosk, KioskOwnerCap, PurchaseCap};
-    use sui::tx_context::{Self, TxContext};
-    use sui::object::{Self, ID, UID};
-    use sui::transfer;
     use sui::event;
     use sui::coin::{Self, Coin};
     use sui::sui::SUI;
     use sui::dynamic_object_field as dof;
-    use sui::transfer_policy::{Self, TransferPolicy, TransferRequest}; // Assuming NFTs use transfer policies
-    use std::type_name; // For type_name::get
-    use std::string;    // For string::bytes and String type
-    use std::ascii;      // For ascii::string
+    use sui::transfer_policy::{Self, TransferPolicy}; // Assuming NFTs use transfer policies
 
     // ========== Constants ==========
 
     /// Error when the sender is not the expected owner or borrower.
     const ENotAuthorized: u64 = 1;
-    /// Error when the NFT is not found in the deposit info.
-    const ENftNotDeposited: u64 = 2;
     /// Error for incorrect SUI amount for reimbursement.
     const EIncorrectReimbursementAmount: u64 = 3;
-     /// Error if the protocol tries to claim an NFT for which it doesn't have a PurchaseCap.
-    const EPurchaseCapNotFound: u64 = 4;
-
 
     // ========== Structs ==========
 
@@ -89,9 +78,10 @@ module lending::nft_lending {
     
     /// Emitted when a deposit is cancelled and PurchaseCap returned.
     public struct DepositCancelled has copy, drop {
-        protocol_store_id: ID,
-        nft_id: ID,
-        original_owner: address
+        // protocol_store_id: ID,
+        // nft_id: ID,
+        // original_owner: address
+
     }
 
     // ========== Init Function ==========
@@ -289,4 +279,18 @@ module lending::nft_lending {
         });
     }
 
+    #[test_only]
+    public fun protocol_kiosk_id_for_testing(store: &LendingProtocolStore): ID {
+        store.protocol_kiosk_id
+    }
+
+    #[test_only]
+    public fun borrower_kiosk_id_from_permission_for_testing<T: key + store>(permission: &NftDepositPermission<T>): ID {
+        permission.borrower_kiosk_id
+    }
+
+    #[test_only]
+    public fun store_uid_for_testing(store: &LendingProtocolStore): &UID {
+        &store.id
+    }
 }
