@@ -10,8 +10,8 @@ import { Transaction } from "@mysten/sui/transactions";
 import { getFullnodeUrl, SuiClient } from "@mysten/sui/client";
 
 
-const client = new SuiClient({ url: getFullnodeUrl("mainnet") });
-const kioskClient = new KioskClient({ client, network: Network.MAINNET });
+const client = new SuiClient({ url: getFullnodeUrl("testnet") });
+const kioskClient = new KioskClient({ client, network: Network.TESTNET });
 
 
 function App() {
@@ -68,7 +68,7 @@ function App() {
       signAndExecuteTransaction(
             {
               transaction: tx,
-              chain: "sui:mainnet"
+              chain: "sui:testnet"
             },
             {
               onSuccess: (result) => {
