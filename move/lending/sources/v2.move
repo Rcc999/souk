@@ -209,6 +209,9 @@ module lending::nft_lending_v2 {
         assert!(object::id(protocol_target_kiosk) == protocol_store.protocol_kiosk_id, EInvalidKiosk);
         // Potentially: assert!(tx_context::sender(ctx) == protocol_admin_address, ENotAuthorized);
 
+        // Store the payment amount before moving the coin
+        let actual_amount_paid_to_borrower = coin::value(&payment_from_protocol);
+
         // Step 1: Retrieve and remove the NftPurchasePermission record.
         let permission_owned: NftPurchasePermission<T> = dof::remove(&mut protocol_store.id, nft_id);
         // Destructure the owned permission to get its fields.
@@ -224,7 +227,7 @@ module lending::nft_lending_v2 {
         // Assert the borrower's kiosk is correct.
         assert!(object::id(borrower_kiosk) == perm_borrower_kiosk_id, EInvalidKiosk);
         // Assert the payment is not negative (perm_listed_price is 0).
-        assert!(coin::value(&payment_from_protocol) >= perm_listed_price, EIncorrectPaymentAmount);
+        assert!(actual_amount_paid_to_borrower >= perm_listed_price, EIncorrectPaymentAmount);
 
         // Step 2: Protocol purchases the NFT from the borrower's kiosk using the PurchaseCap and payment.
         // The `payment_from_protocol` coin is transferred to the borrower's kiosk profits (after royalties).
@@ -234,8 +237,6 @@ module lending::nft_lending_v2 {
             payment_from_protocol // This coin's value is what the protocol pays.
         );
 
-        // The amount paid by the protocol to the borrower is the value of the coin provided.
-        let actual_amount_paid_to_borrower = coin::value(&payment_from_protocol);
         // Step 3: Confirm the transfer request, satisfying policy requirements.
         // The TransferPolicy will validate if `actual_amount_paid_to_borrower` meets any minimum price rules and will handle royalties.
         transfer_policy::confirm_request<T>(policy, transfer_req);
@@ -253,7 +254,7 @@ module lending::nft_lending_v2 {
             id: object::new(ctx),
             nft_id: nft_id,
             original_owner: perm_original_owner,
-            amount_paid_by_protocol: actual_amount_paid_to_borrower, // Record the actual amount paid by protocol.
+            amount_paid_by_protocol: actual_amount_paid_to_borrower, // Use the stored amount
         };
         dof::add(&mut protocol_store.id, nft_id, collateral_info);
         object::delete(permission_uid); // Delete the UID of the consumed NftPurchasePermission record.
@@ -265,7 +266,7 @@ module lending::nft_lending_v2 {
             nft_id: nft_id,
             original_owner: perm_original_owner,
             borrower_kiosk_id: perm_borrower_kiosk_id,
-            amount_paid_by_protocol: actual_amount_paid_to_borrower, // Emit the actual amount paid by protocol.
+            amount_paid_by_protocol: actual_amount_paid_to_borrower, // Use the stored amount
         });
     }
 
@@ -334,5 +335,10 @@ module lending::nft_lending_v2 {
     #[test_only]
     public fun store_uid_for_testing(store: &LendingProtocolStore): &UID {
         &store.id
+    }
+
+    #[test_only]
+    public fun init_for_testing(ctx: &mut TxContext) {
+        init(ctx)
     }
 }
