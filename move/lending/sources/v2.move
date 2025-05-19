@@ -129,27 +129,43 @@ module lending::nft_lending_v2 {
     // and grants the protocol a PurchaseCap. This allows the protocol to buy the NFT
     // directly from the borrower's kiosk. The payment made by the protocol must cover any creator-set minimum price and royalties.
 
-    /// Entry function for a borrower to grant the protocol permission to purchase their NFT.
-    /// The borrower lists the NFT in their own Kiosk for 0 SUI and the resulting `PurchaseCap`
-    /// is stored in an `NftPurchasePermission` record associated with the protocol.
+    /// Entry function for a borrower to grant the protocol permission to purchase their NFT,
+    /// and for the protocol to immediately claim the NFT. The protocol will attempt to pay
+    /// 0 SUI, or a specified royalty amount if provided by the borrower.
+    /// The borrower lists the NFT in their own Kiosk for 0 SUI. The `PurchaseCap`
+    /// is used by the protocol for the purchase attempt.
+    /// If the NFT's TransferPolicy requires more than this (e.g., a minimum price not covered,
+    /// or if actual royalties exceed the specified amount), or if the protocol treasury
+    /// cannot cover the specified royalty, the entire transaction reverts.
     ///
     /// Arguments:
     /// - `protocol_store`: Mutable reference to the `LendingProtocolStore`.
     /// - `borrower_kiosk`: Mutable reference to the borrower's `Kiosk` where the NFT is listed.
     /// - `borrower_kiosk_cap`: Mutable reference to the borrower's `KioskOwnerCap`.
+    /// - `protocol_target_kiosk`: Mutable reference to the protocol's `Kiosk` where the claimed NFT will be locked.
     /// - `nft_id`: The `ID` of the NFT.
+    /// - `policy`: Mutable reference to the `TransferPolicy` for the NFT type `T`.
+    /// - `royalty_to_pay_if_any`: The SUI amount for royalties the protocol should attempt to pay. 
+    ///                              Pass 0 to attempt a 0 SUI transfer (if no royalties are expected or known).
     /// - `ctx`: Mutable reference to the `TxContext`.
     public entry fun borrower_grant_purchase_cap_permission<T: key + store>(
         protocol_store: &mut LendingProtocolStore,
         borrower_kiosk: &mut Kiosk, // Borrower's Kiosk
         borrower_kiosk_cap: &KioskOwnerCap, // Borrower's Kiosk OwnerCap
+        protocol_target_kiosk: &mut Kiosk, // Protocol's Kiosk to lock NFT into
         nft_id: ID,
+        policy: &TransferPolicy<T>, // Policy for the NFT type T
+        royalty_to_pay_if_any: u64, // Protocol attempts to pay this for royalties, or 0.
         ctx: &mut TxContext
     ) {
-        // Assert that this NFT is not already in some process with the protocol.
+        // Assert that this NFT is not already in some process with the protocol
+        // (e.g., already held as NftAsCollateral).
         assert!(!dof::exists_(&protocol_store.id, nft_id), EAlreadyInProcess);
 
-        // Step 1: Borrower lists the NFT in their kiosk for 0 SUI, obtaining a PurchaseCap.
+        // Part 1: Borrower lists the NFT and grants PurchaseCap.
+        let current_sender = tx_context::sender(ctx);
+        let current_borrower_kiosk_id = object::id(borrower_kiosk);
+
         let purchase_cap = kiosk::list_with_purchase_cap<T>(
             borrower_kiosk,
             borrower_kiosk_cap,
@@ -158,90 +174,62 @@ module lending::nft_lending_v2 {
             ctx
         );
 
-        // Step 2: Create and store the NftPurchasePermission record.
         let permission = NftPurchasePermission<T> {
-            id: object::new(ctx), // New UID for the permission record.
+            id: object::new(ctx),
             nft_id: nft_id,
-            original_owner: tx_context::sender(ctx), // Borrower is the sender.
-            borrower_kiosk_id: object::id(borrower_kiosk), // Record borrower's kiosk ID.
-            listed_price: 0, // Reflects the 0 SUI listing price.
-            purchase_cap: purchase_cap, // Store the PurchaseCap.
+            original_owner: current_sender,
+            borrower_kiosk_id: current_borrower_kiosk_id,
+            listed_price: 0,
+            purchase_cap: purchase_cap,
         };
-        // Add the permission record as a dynamic object field to the protocol_store.
         dof::add(&mut protocol_store.id, nft_id, permission);
 
-        // Step 3: Emit an event.
         event::emit(PurchaseCapPermissionGranted {
             protocol_store_id: object::uid_to_inner(&protocol_store.id),
             nft_id: nft_id,
-            original_owner: tx_context::sender(ctx),
-            borrower_kiosk_id: object::id(borrower_kiosk),
-            listed_price: 0 // Emit 0 as the listed price
+            original_owner: current_sender,
+            borrower_kiosk_id: current_borrower_kiosk_id,
+            listed_price: 0
         });
-    }
 
-    /// Entry function for the protocol to claim an NFT using a granted `PurchaseCap`.
-    /// The protocol uses the stored `PurchaseCap` to buy the NFT from the borrower's Kiosk.
-    /// The NFT is then locked into the protocol's target Kiosk. An `NftAsCollateral` record is created.
-    /// The payment provided by the protocol must cover any minimum price and royalties enforced by the NFT's TransferPolicy.
-    ///
-    /// Arguments:
-    /// - `protocol_store`: Mutable reference to the `LendingProtocolStore`.
-    /// - `protocol_target_kiosk`: Mutable reference to the protocol's `Kiosk` where the claimed NFT will be locked.
-    ///   (Must match `protocol_store.protocol_kiosk_id`).
-    /// - `borrower_kiosk`: Mutable reference to the borrower's `Kiosk` from which the NFT is purchased.
-    ///   (Must match the one stored in `NftPurchasePermission`).
-    /// - `nft_id`: The `ID` of the NFT to be claimed.
-    /// - `policy`: Mutable reference to the `TransferPolicy` for the NFT type `T`.
-    /// - `payment_from_protocol`: A `Coin<SUI>` provided by the protocol. This coin's value is what the protocol pays.
-    ///   The caller (protocol operator) is responsible for ensuring this coin comes from the protocol's funds.
-    /// - `ctx`: Mutable reference to the `TxContext`.
-    public entry fun protocol_claim_nft_with_purchase_cap<T: key + store>(
-        protocol_store: &mut LendingProtocolStore,
-        protocol_target_kiosk: &mut Kiosk, // Protocol's Kiosk to lock NFT into
-        borrower_kiosk: &mut Kiosk,      // Borrower's Kiosk holding the NFT
-        nft_id: ID,
-        policy: &TransferPolicy<T>,      // Policy for the NFT type T
-        payment_from_protocol: Coin<SUI>,// Coin from protocol to pay borrower
-        ctx: &mut TxContext
-    ) {
+        // Part 2: Protocol automatically attempts to claim the NFT.
+
         // Assert the protocol's target kiosk is correct.
         assert!(object::id(protocol_target_kiosk) == protocol_store.protocol_kiosk_id, EInvalidKiosk);
-        // Potentially: assert!(tx_context::sender(ctx) == protocol_admin_address, ENotAuthorized);
 
-        // Store the payment amount before moving the coin
-        let actual_amount_paid_to_borrower = coin::value(&payment_from_protocol);
+        // The protocol will pay the specified royalty amount (or 0) from its treasury.
+        let amount_to_pay_by_protocol = royalty_to_pay_if_any;
+        let payment_for_claim_coin = coin::take(&mut protocol_store.protocol_treasury, amount_to_pay_by_protocol, ctx);
 
-        // Step 1: Retrieve and remove the NftPurchasePermission record.
+        // Retrieve and remove the NftPurchasePermission record that was just added.
         let permission_owned: NftPurchasePermission<T> = dof::remove(&mut protocol_store.id, nft_id);
-        // Destructure the owned permission to get its fields.
         let NftPurchasePermission {
             id: permission_uid,
             nft_id: _, // nft_id is an argument.
             original_owner: perm_original_owner,
             borrower_kiosk_id: perm_borrower_kiosk_id,
-            listed_price: perm_listed_price, // This will be 0 from the modified borrower_grant_purchase_cap_permission
-            purchase_cap: perm_purchase_cap // This is the actual PurchaseCap object.
+            listed_price: perm_listed_price, // This will be 0
+            purchase_cap: perm_purchase_cap
         } = permission_owned;
 
-        // Assert the borrower's kiosk is correct.
-        assert!(object::id(borrower_kiosk) == perm_borrower_kiosk_id, EInvalidKiosk);
-        // Assert the payment is not negative (perm_listed_price is 0).
-        assert!(actual_amount_paid_to_borrower >= perm_listed_price, EIncorrectPaymentAmount);
+        // Sanity checks (should hold true based on Part 1 execution)
+        assert!(perm_original_owner == current_sender, ENotAuthorized); // Should be the one who granted
+        assert!(perm_borrower_kiosk_id == current_borrower_kiosk_id, EInvalidKiosk);
+        // perm_listed_price is 0. amount_to_pay_by_protocol must be >= 0.
+        assert!(amount_to_pay_by_protocol >= perm_listed_price, EIncorrectPaymentAmount);
 
-        // Step 2: Protocol purchases the NFT from the borrower's kiosk using the PurchaseCap and payment.
-        // The `payment_from_protocol` coin is transferred to the borrower's kiosk profits (after royalties).
+        // Protocol purchases the NFT from the borrower's kiosk using the PurchaseCap and the determined payment.
         let (nft_object, transfer_req) = kiosk::purchase_with_cap<T>(
-            borrower_kiosk,
-            perm_purchase_cap, // Use the owned PurchaseCap.
-            payment_from_protocol // This coin's value is what the protocol pays.
+            borrower_kiosk, // Borrower's kiosk from arguments
+            perm_purchase_cap,
+            payment_for_claim_coin // Coin taken from protocol treasury based on suggested_payment_for_claim
         );
 
-        // Step 3: Confirm the transfer request, satisfying policy requirements.
-        // The TransferPolicy will validate if `actual_amount_paid_to_borrower` meets any minimum price rules and will handle royalties.
+        // Confirm the transfer request, satisfying policy requirements.
+        // If policy requires > amount_to_pay_by_protocol, this fails, reverting the entire transaction.
         transfer_policy::confirm_request<T>(policy, transfer_req);
 
-        // Step 4: Lock the acquired NFT into the protocol's target kiosk.
+        // Lock the acquired NFT into the protocol's target kiosk.
         kiosk::lock<T>(
             protocol_target_kiosk,
             &protocol_store.protocol_kiosk_cap,
@@ -249,24 +237,25 @@ module lending::nft_lending_v2 {
             nft_object
         );
 
-        // Step 5: Create and store NftAsCollateral record.
+        // Create and store NftAsCollateral record.
         let collateral_info = NftAsCollateral {
             id: object::new(ctx),
             nft_id: nft_id,
-            original_owner: perm_original_owner,
-            amount_paid_by_protocol: actual_amount_paid_to_borrower, // Use the stored amount
+            original_owner: perm_original_owner, // This is current_sender
+            amount_paid_by_protocol: amount_to_pay_by_protocol, // Store the actual amount protocol took (0 or royalty)
         };
+        // The dynamic field for nft_id was NftPurchasePermission, now it will be NftAsCollateral.
         dof::add(&mut protocol_store.id, nft_id, collateral_info);
-        object::delete(permission_uid); // Delete the UID of the consumed NftPurchasePermission record.
+        object::delete(permission_uid); // Delete the UID of the consumed NftPurchasePermission object.
 
-        // Step 6: Emit an event.
+        // Emit NftClaimedWithPurchaseCap event.
         event::emit(NftClaimedWithPurchaseCap {
             protocol_store_id: object::uid_to_inner(&protocol_store.id),
             protocol_kiosk_id: protocol_store.protocol_kiosk_id,
             nft_id: nft_id,
             original_owner: perm_original_owner,
             borrower_kiosk_id: perm_borrower_kiosk_id,
-            amount_paid_by_protocol: actual_amount_paid_to_borrower, // Use the stored amount
+            amount_paid_by_protocol: amount_to_pay_by_protocol,
         });
     }
 
