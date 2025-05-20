@@ -17,38 +17,13 @@ const ShowNfts: React.FC = () => {
   const currentAccount = useCurrentAccount();
   const { mutate: signAndExecuteTransaction } = useSignAndExecuteTransaction();
 
+  const [policy, setPolicy] = useState(null);
   const [kioskOwnerCaps, setKioskOwnerCaps] = useState<any[]>([]);
+  const [kioskIds, setKioskIds] = useState<any[]>([]);
   const [kioskItems, setKioskItems] = useState<any[]>([]);
   const [selectedItem, setSelectedItem] = useState<any>(null);
   const [loading, setLoading] = useState(false);
 
-  //   const delistWithPurchaseCap = async (item: any, kioskOwnerCap: any) => {
-  //     const itemType = item.type;
-  //     const tx = new Transaction();
-
-  //     const kioskTx = new KioskTransaction({
-  //       transaction: tx as any,
-  //       kioskClient,
-  //       cap: kioskOwnerCap,
-  //     });
-
-  //     const purchase_cap = tx.object(
-  //       "0xb4c31f763c328928144266e3e2668b9ba0cfbe968f1708cc4cd06b6c3cebb287",
-  //     );
-
-  //     tx.moveCall({
-  //       target: "0x2::kiosk::return_purchase_cap",
-  //       arguments: [kioskTx.getKiosk() as any, purchase_cap as any],
-  //       typeArguments: [itemType],
-  //     });
-
-  //     kioskTx.finalize();
-
-  //     signAndExecuteTransaction({
-  //       transaction: tx,
-  //       chain: "sui:mainnet",
-  //     });
-  //   };
 
   const transferMonies = async () => {
     setLoading(true);
@@ -87,36 +62,33 @@ const ShowNfts: React.FC = () => {
     }
   };
 
-  //   const transferToAdress = async (item: any) => {
-  //     const itemType = item.type;
-  //     const tx = new Transaction();
-  //     const kioskTx = new KioskTransaction({
-  //       transaction: tx as any,
-  //       kioskClient,
-  //       cap: kioskOwnerCaps[0],
-  //     });
+  const call_protocol = async (item, kiosk, kioskOwnerCap, min_price, policy) => {
+    alert("Inside");
+    const itemType = item.type;
+    const tx = new Transaction();
+    const [coin] = tx.splitCoins(tx.gas, [0]);
+    alert("Here");
+    tx.moveCall({
+      target: '0x0fd6bbeba119bca082decbcb0e4a5a5f362c69992a2931f9689ab8e269d53115::souk::transfer_nft_to_protocol',
+      arguments: [kiosk, kioskOwnerCap, item.id, 0, coin, policy, tx.object("0xe9be25972bf038ef400883e06da119248b73201e78c0710495388b689effc168")],
+      typeArguments: [itemType],
+    });
 
-  //     kioskTx
-  //       .transfer({
-  //         itemId: item,
-  //         itemType: itemType,
-  //         address:
-  //           "0x392fa498dbcfffc5cb8b0b3d8bf43f5621f0f75632c5507da0fc66601faa1a46",
-  //       })
-  //       .finalize();
-
-  //     signAndExecuteTransaction(
-  //       {
-  //         transaction: tx,
-  //         chain: "sui:mainnet",
-  //       },
-  //       {
-  //         onSuccess: (result) => {
-  //           alert(result);
-  //         },
-  //       },
-  //     );
-  //   };
+    await signAndExecuteTransaction(
+      {
+        transaction: tx,
+        chain: "sui:mainnet",
+      },
+      {
+        onSuccess: (result) => {
+          console.log("Transaction successful:", result);
+        },
+        onError: (error) => {
+          console.error("Transaction failed:", error);
+        },
+      },
+    );
+  }
 
   const fetchKioskIds = async () => {
     const address = currentAccount?.address;
@@ -135,6 +107,9 @@ const ShowNfts: React.FC = () => {
           },
         });
 
+        setKioskOwnerCaps(response.kioskOwnerCaps);
+        setKioskIds(response.kioskIds)
+
         allKioskIds = [...allKioskIds, ...response.kioskIds];
 
         if (response.hasNextPage && response.nextCursor) {
@@ -150,6 +125,20 @@ const ShowNfts: React.FC = () => {
     }
   };
 
+  async function fetchPolicy() {
+    try {
+      const rawPolicies = await kioskClient.getTransferPolicies({
+        type: "0xee496a0cc04d06a345982ba6697c90c619020de9e274408c7819f787ff66e1a1::suifrens::SuiFren<0xee496a0cc04d06a345982ba6697c90c619020de9e274408c7819f787ff66e1a1::capy::Capy>",
+      });
+  
+      return rawPolicies;
+    } catch (error) {
+      console.error("Error fetching transfer policies:", error);
+      return null;
+    }
+  }
+  
+
   const fetchAllKioskItems = async () => {
     if (!currentAccount?.address) {
       return;
@@ -161,6 +150,7 @@ const ShowNfts: React.FC = () => {
       if (!kioskIds || kioskIds.length === 0) {
         return;
       }
+
 
       setKioskItems([]); // Clear existing items while loading
       let allItems: any[] = [];
@@ -176,15 +166,15 @@ const ShowNfts: React.FC = () => {
             },
           });
 
+          alert(kiosk.items);
           const objects = kiosk.items || [];
           if (objects.length > 0) {
             // Filter out items without proper display data
             const validItems = objects.filter(
               (item) =>
-                item.data?.display?.data?.image_url &&
-                item.data?.display?.data?.name,
+                item.data?.display?.data?.image_url
+              // && item.data?.display?.data?.name,
             );
-            console.log(validItems);
             allItems = allItems.concat(
               validItems.map((item) => ({
                 ...item,
@@ -193,6 +183,11 @@ const ShowNfts: React.FC = () => {
               })),
             );
           }
+
+          alert(allItems);
+
+          const rawPolicies = fetchPolicy();
+          setPolicy(rawPolicies);
         } catch (kioskError) {
           console.error(`Error fetching kiosk ${kioskId}:`, kioskError);
           // Continue with other kiosks even if one fails
@@ -259,8 +254,10 @@ const ShowNfts: React.FC = () => {
         >
           Transfer Money
         </button>
+        <button onClick={() => call_protocol(selectedItem, kioskIds[0], kioskOwnerCaps[0], 0, policy)}>
+          Send To Protocol
+        </button>
       </div>
-
       {kioskItems.length > 0 && (
         <div
           style={{
@@ -305,6 +302,7 @@ const ShowNfts: React.FC = () => {
                       height: "100%",
                       objectFit: "cover",
                     }}
+                    onClick={() => setSelectedItem(item)}
                   />
                 </div>
               )}
@@ -365,6 +363,9 @@ const ShowNfts: React.FC = () => {
               </div>
             </div>
           ))}
+          {selectedItem && (
+                  <div>{selectedItem.objectId}</div>
+                )}
         </div>
       )}
     </div>
