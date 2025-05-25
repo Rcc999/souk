@@ -25,21 +25,57 @@ const kioskClient = new KioskClient({
 });
 
 const ShowNfts: React.FC = () => {
+
+  let soukCap = "0x1024b764329d6b7690aef7cff72e8257a6323a66de7dc3c785b48917804f7eb7";
+  let contractsAddress = "0xa834c3485e0980bf2a9aae2f5bc8eff77a46b1cd2aba9ccfb11e19863a12db90";
+  let chain = "mainnet" // Used for signAndExecute
+
   const currentAccount = useCurrentAccount();
   const { mutate: signAndExecuteTransaction } = useSignAndExecuteTransaction();
   const [isError, setIsError] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const [policy, setPolicy] = useState<TransferPolicy[] | null>(null);
   const [kioskOwnerCaps, setKioskOwnerCaps] = useState<any[]>([]);
   const [kioskIds, setKioskIds] = useState<string[]>([]);
   const [kioskItems, setKioskItems] = useState<any[]>([]);
   const [selectedItem, setSelectedItem] = useState<any>(null);
   const [selectedItemPolicy, setSelectedItemPolicy] = useState<
-    TransferPolicy[] | null
+  TransferPolicy[] | null
   >(null);
   const [loading, setLoading] = useState(false);
+  const [loanTickets, setLoanTickets] = useState<any[]>([]);
+  const [selectedTicket, setSelectedTicket] = useState<any>(null);
+  
+  function extractGenericType(typeStr: string): string | null {
+    const match = typeStr.match(/<(.+)>/);
+    return match ? match[1] : null;
+  }
 
+  
+  async function fetchAllTickets() {
+    try {
+      const baseType = contractsAddress+"::souk::LoanTicket";
+  
+      const allObjects = await suiClient.getOwnedObjects({
+        owner: currentAccount?.address,
+        options: { 
+          showType: true,
+          showContent: true
+        }
+      });
+  
+      const filteredObjects = allObjects.data.filter(obj => {
+        const objType = obj.data?.type;
+        return objType?.startsWith(baseType + "<");
+      });
+  
+      setLoanTickets(filteredObjects);
+    } catch (error) {
+      console.error("Error fetching owned objects:", error);
+      return [];
+    }
+  }
+  
   const clearError = () => {
     setIsError(false);
     setErrorMessage(null);
@@ -52,53 +88,55 @@ const ShowNfts: React.FC = () => {
     setTimeout(clearError, 5000);
   };
 
-  const transferMonies = async () => {
-    setLoading(true);
-    try {
-      if (!currentAccount?.address) {
-        console.error("No wallet connected");
-        return;
-      }
+  const exchange_ticket = async () => {
+    const tx = new Transaction();
+    const [coin] = tx.splitCoins(tx.gas, [0]);
 
-      const address =
-        "0x392fa498dbcfffc5cb8b0b3d8bf43f5621f0f75632c5507da0fc66601faa1a46";
+    let typeToUse = extractGenericType(selectedTicket.data.content.type);
 
-      const tx = new Transaction();
-      // Use the first gas object that has enough balance
-      const [coin] = tx.splitCoins(tx.gas, [100000000]);
-      tx.transferObjects([coin], tx.pure.address(address));
+    tx.moveCall({
+      target:
+        contractsAddress+"::souk::redeem_nft",
+      arguments: [
+        tx.object(selectedTicket.data.objectId), // Loan Ticket
+        tx.object(selectedTicket.data.content.fields.transfer_policy_id), // Policy
+        tx.object(soukCap), // SoukCap
+        tx.object(selectedTicket.data.content.fields.borrower_kiosk_id), // borrower_kiosk
+        tx.object(selectedTicket.data.content.fields.borrower_kiosk_cap_id), // borrower_kiosk
+        coin,
+      ],
+      typeArguments: [typeToUse],
+    });
 
-      await signAndExecuteTransaction(
-        {
-          transaction: tx,
-          chain: "sui:mainnet",
+    await signAndExecuteTransaction(
+      {
+        transaction: tx,
+        chain: "sui:"+chain,
+      },
+      {
+        onSuccess: (result) => {
+          console.log("Transfer to protocol successful:", result);
+          showError("NFT successfully sent to protocol!");
+          setSelectedTicket(null);
+          setSelectedItem(null);
+          setSelectedItemPolicy(null);
+          setLoanTickets([]);
+          fetchAllTickets();
         },
-        {
-          onSuccess: (result) => {
-            console.log("Transaction successful:", result);
-          },
-          onError: (error) => {
-            console.error("Transaction failed:", error);
-          },
+        onError: (error) => {
+          console.error("Transfer to protocol failed:", error);
+          const errorMsg =
+            (error as any)?.shape?.message ||
+            error?.message ||
+            "Unknown error occurred";
+          showError(`Transfer failed: ${errorMsg}`);
         },
-      );
-    } catch (e) {
-      console.error("Error in transferMonies:", e);
-    } finally {
-      setLoading(false);
-    }
-  };
+      },
+    )
+  }
 
-  const call_protocol = async () => {
+  const deposite_nft = async () => {
     try {
-      if (!selectedItem) {
-        showError("Please select an NFT first.");
-        return;
-      }
-      if (!currentAccount?.address) {
-        showError("Wallet not connected.");
-        return;
-      }
 
       const {
         objectId: nft_id,
@@ -106,61 +144,15 @@ const ShowNfts: React.FC = () => {
         kioskId: itemKioskId,
       } = selectedItem;
 
-      if (!itemKioskId) {
-        showError("Selected item is not associated with a kiosk.");
-        return;
-      }
-
-      if (!itemType) {
-        showError("Selected item has no type information.");
-        console.error("Item type is missing:", selectedItem);
-        return;
-      }
-
-      // Ensure we have a valid type string
-      let fullType: string;
-      try {
-        fullType =
-          typeof itemType === "string" ? itemType : itemType.toString();
-        if (!fullType || fullType.trim() === "") {
-          throw new Error("Empty type string");
-        }
-      } catch (e) {
-        showError("Invalid item type format");
-        console.error("Failed to process item type:", itemType, e);
-        return;
-      }
-
-      console.log("Using item type:", fullType);
-
       const kioskIndex = kioskIds.findIndex((id) => id === itemKioskId);
-      if (kioskIndex === -1) {
-        showError(
-          "Could not find the kiosk owner cap for the selected item's kiosk.",
-        );
-        return;
-      }
-      const kioskOwnerCap = kioskOwnerCaps[kioskIndex] as any;
-
-      if (!kioskOwnerCap) {
-        showError("Kiosk owner cap is invalid for the selected item.");
-        console.error("Invalid kioskOwnerCap:", kioskOwnerCap);
-        return;
-      }
 
       // Use the KioskOwnerCap from the kioskOwnerCaps array
       const cap = kioskOwnerCaps[kioskIndex];
-      if (!cap || !cap.objectId || !cap.version || !cap.digest) {
-        showError("Could not find a valid KioskOwnerCap for this kiosk.");
-        console.error("Invalid cap from kioskOwnerCaps:", cap);
-        return;
-      }
       const capRef = {
         objectId: cap.objectId,
         version: cap.version,
         digest: cap.digest,
       };
-      console.log("KioskOwnerCap objectRef (from owned cap):", capRef);
 
       const tx = new Transaction();
       const [coin] = tx.splitCoins(tx.gas, [0]);
@@ -172,11 +164,9 @@ const ShowNfts: React.FC = () => {
           ? selectedItemPolicy[0].id
           : "0x6";
 
-      console.log("Using policy ID:", policyIdToUse);
-
       tx.moveCall({
         target:
-          "0x0fd6bbeba119bca082decbcb0e4a5a5f362c69992a2931f9689ab8e269d53115::souk::transfer_nft_to_protocol",
+          contractsAddress+"::souk::transfer_nft_to_protocol",
         arguments: [
           tx.object(itemKioskId),
           tx.objectRef(capRef),
@@ -184,28 +174,27 @@ const ShowNfts: React.FC = () => {
           tx.pure.u64(0),
           coin,
           tx.object(policyIdToUse),
-          tx.object(
-            "0xe9be25972bf038ef400883e06da119248b73201e78c0710495388b689effc168",
-          ),
+          tx.object(soukCap),
         ],
-        typeArguments: [fullType],
+        typeArguments: [itemType],
       });
 
       await signAndExecuteTransaction(
         {
           transaction: tx,
-          chain: "sui:mainnet",
+          chain: "sui:"+chain,
         },
         {
-          onSuccess: (result) => {
-            console.log("Transfer to protocol successful:", result);
+          onSuccess: (_) => {
             showError("NFT successfully sent to protocol!");
+            setSelectedTicket(null);
             setSelectedItem(null);
             setSelectedItemPolicy(null);
+            setKioskIds([]);
+            setKioskItems([]);
             fetchAllKioskItems();
           },
           onError: (error) => {
-            console.error("Transfer to protocol failed:", error);
             const errorMsg =
               (error as any)?.shape?.message ||
               error?.message ||
@@ -215,10 +204,24 @@ const ShowNfts: React.FC = () => {
         },
       );
     } catch (e: any) {
-      console.error("Error in call_protocol (catch block):", e);
       showError(`An error occurred: ${e.message || e.toString()}`);
     }
   };
+
+  const buttonStyle = (bg: string, hover: string) => ({
+    padding: "0.5rem 1rem",
+    backgroundColor: bg,
+    color: "#fff",
+    border: "none",
+    borderRadius: "0.5rem",
+    fontWeight: 600,
+    cursor: "pointer",
+    boxShadow: "0 2px 6px rgba(0,0,0,0.15)",
+    transition: "background-color 0.3s ease",
+    onMouseEnter: (e: any) => (e.target.style.backgroundColor = hover),
+    onMouseLeave: (e: any) => (e.target.style.backgroundColor = bg),
+  });
+  
 
   const fetchKioskIds = async () => {
     const address = currentAccount?.address;
@@ -294,14 +297,10 @@ const ShowNfts: React.FC = () => {
             },
           });
 
-          alert(kiosk.items);
           const objects = kiosk.items || [];
           if (objects.length > 0) {
             // Filter out items without proper display data
-            const validItems = objects.filter(
-              (item) => item.data?.display?.data?.image_url,
-              // && item.data?.display?.data?.name,
-            );
+            const validItems = objects;
             allItems = allItems.concat(
               validItems.map((item) => ({
                 ...item,
@@ -311,12 +310,6 @@ const ShowNfts: React.FC = () => {
             );
           }
 
-          alert(allItems);
-
-          const rawPolicies = await fetchPolicyForItem(
-            "0xee496a0cc04d06a345982ba6697c90c619020de9e274408c7819f787ff66e1a1::suifrens::SuiFren<0xee496a0cc04d06a345982ba6697c90c619020de9e274408c7819f787ff66e1a1::capy::Capy>",
-          );
-          setPolicy(rawPolicies);
         } catch (kioskError) {
           console.error(`Error fetching kiosk ${kioskId}:`, kioskError);
           // Continue with other kiosks even if one fails
@@ -335,215 +328,231 @@ const ShowNfts: React.FC = () => {
     }
   };
 
-  return (
-    <div style={{ padding: "2rem" }}>
-      {isError && errorMessage && (
+  return (<div style={{ padding: "2rem" }}>
+    {isError && errorMessage && (
+      <div
+        style={{
+          position: "fixed",
+          top: "1rem",
+          right: "1rem",
+          padding: "1rem 1.5rem",
+          backgroundColor: "#FEE2E2",
+          border: "1px solid #EF4444",
+          borderRadius: "0.5rem",
+          color: "#991B1B",
+          zIndex: 1000,
+          maxWidth: "400px",
+          boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
+          transition: "transform 0.2s ease, opacity 0.2s ease",
+        }}
+      >
         <div
           style={{
-            position: "fixed",
-            top: "1rem",
-            right: "1rem",
-            padding: "1rem",
-            backgroundColor: "#FEE2E2",
-            border: "1px solid #EF4444",
-            borderRadius: "0.5rem",
-            color: "#991B1B",
-            zIndex: 1000,
-            maxWidth: "80%",
-            boxShadow: "0 2px 4px rgba(0,0,0,0.1)",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: "1rem",
           }}
         >
-          <div
+          <span style={{ flex: 1 }}>{errorMessage}</span>
+          <button
+            onClick={clearError}
             style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
+              backgroundColor: "transparent",
+              color: "#991B1B",
+              fontSize: "1.2rem",
+              border: "none",
+              cursor: "pointer",
+              fontWeight: "bold",
             }}
           >
-            <span>{errorMessage}</span>
-            <button
-              onClick={clearError}
-              style={{
-                marginLeft: "1rem",
-                padding: "0.25rem 0.5rem",
-                backgroundColor: "#EF4444",
-                color: "white",
-                border: "none",
-                borderRadius: "0.25rem",
-                cursor: "pointer",
-              }}
-            >
-              ×
-            </button>
-          </div>
+            ×
+          </button>
         </div>
-      )}
-      <div style={{ display: "flex", gap: "1rem", marginBottom: "2rem" }}>
-        <button
-          style={{
-            padding: "0.5rem 1rem",
-            backgroundColor: "#4F46E5",
-            color: "#fff",
-            border: "none",
-            borderRadius: "0.5rem",
-            fontWeight: "600",
-            cursor: "pointer",
-            boxShadow: "0 2px 6px rgba(0, 0, 0, 0.15)",
-            transition: "background-color 0.3s ease",
-          }}
-          onMouseOver={(e) =>
-            ((e.target as HTMLElement).style.backgroundColor = "#4338CA")
-          }
-          onMouseOut={(e) =>
-            ((e.target as HTMLElement).style.backgroundColor = "#4F46E5")
-          }
-          onClick={() => fetchAllKioskItems()}
-        >
-          {loading ? "Loading..." : "Show My NFTs"}
-        </button>
-
-        <button
-          style={{
-            padding: "0.5rem 1rem",
-            backgroundColor: "#10B981",
-            color: "#fff",
-            border: "none",
-            borderRadius: "0.5rem",
-            fontWeight: "600",
-            cursor: "pointer",
-            boxShadow: "0 2px 6px rgba(0, 0, 0, 0.15)",
-            transition: "background-color 0.3s ease",
-          }}
-          onMouseOver={(e) =>
-            ((e.target as HTMLElement).style.backgroundColor = "#059669")
-          }
-          onMouseOut={(e) =>
-            ((e.target as HTMLElement).style.backgroundColor = "#10B981")
-          }
-          onClick={() => transferMonies()}
-        >
-          Transfer Money
-        </button>
-        <button onClick={call_protocol}>Send To Protocol</button>
       </div>
-      {kioskItems.length > 0 && (
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))",
-            gap: "2rem",
-            padding: "1rem",
-          }}
-        >
-          {kioskItems.map((item) => (
-            <div
-              key={item.objectId}
-              style={{
-                border: "1px solid #e5e7eb",
-                borderRadius: "0.75rem",
-                overflow: "hidden",
-                boxShadow: "0 4px 6px -1px rgba(0, 0, 0, 0.1)",
-                transition: "transform 0.2s ease",
-                backgroundColor: "white",
-                cursor: "pointer",
-              }}
-              onMouseOver={(e) => {
-                e.currentTarget.style.transform = "translateY(-4px)";
-              }}
-              onMouseOut={(e) => {
-                e.currentTarget.style.transform = "translateY(0)";
-              }}
-              onClick={async () => {
-                setSelectedItem(item);
-                setSelectedItemPolicy(null); // Reset policy while fetching
-                if (item.type) {
-                  const fetchedPolicy = await fetchPolicyForItem(item.type);
-                  console.log(
-                    "Fetched policy for:",
-                    item.data?.display?.data?.name || item.objectId,
-                    fetchedPolicy,
-                  );
-                  setSelectedItemPolicy(fetchedPolicy);
-                } else {
-                  console.error(
-                    "Item type is missing for policy fetching.",
-                    item,
-                  );
-                  setSelectedItemPolicy([]); // Indicate no policy or error
-                }
-              }}
-            >
-              {item.data?.display?.data?.image_url && (
-                <div
-                  style={{
-                    width: "100%",
-                    height: "250px",
-                    position: "relative",
-                  }}
-                >
-                  <img
-                    src={item.data.display.data.image_url}
-                    alt={item.data.display.data.name || "NFT"}
-                    style={{
-                      width: "100%",
-                      height: "100%",
-                      objectFit: "cover",
-                    }}
-                  />
-                </div>
-              )}
-              <div style={{ padding: "1rem" }}>
-                <h3
-                  style={{
-                    margin: "0",
-                    fontSize: "1.1rem",
-                    fontWeight: "600",
-                    color: "#1f2937",
-                  }}
-                >
-                  {item.data?.display?.data?.name || "Unnamed NFT"}
-                </h3>
-                {item.data?.display?.data?.description && (
-                  <p
-                    style={{
-                      margin: "0.5rem 0 0",
-                      fontSize: "0.875rem",
-                      color: "#6b7280",
-                      display: "-webkit-box",
-                      WebkitLineClamp: 2,
-                      WebkitBoxOrient: "vertical",
-                      overflow: "hidden",
-                    }}
-                  >
-                    {item.data.display.data.description}
-                  </p>
-                )}
-              </div>
-            </div>
-          ))}
-          {selectedItem && <div>Selected Item ID: {selectedItem.objectId}</div>}
-          {selectedItemPolicy && (
-            <div
-              style={{
-                marginTop: "1rem",
-                padding: "1rem",
-                border: "1px solid #ccc",
-                borderRadius: "0.5rem",
-                backgroundColor: "#f9f9f9",
-              }}
-            >
-              <h4>Transfer Policy for Selected Item:</h4>
-              {selectedItemPolicy.length > 0 ? (
-                <pre>{JSON.stringify(selectedItemPolicy, null, 2)}</pre>
-              ) : (
-                <p>No transfer policies found or item type is missing.</p>
-              )}
-            </div>
-          )}
-        </div>
-      )}
+    )}
+  
+    {/* Action Buttons */}
+    <div style={{ display: "flex", gap: "1rem", marginBottom: "2rem", flexWrap: "wrap" }}>
+      <button
+        style={buttonStyle("#4F46E5", "#4338CA")}
+        onClick={() => fetchAllKioskItems()}
+      >
+        {loading ? "Loading..." : "Show My NFTs"}
+      </button>
+      <button
+  style={buttonStyle("#6366F1", "#4F46E5")}
+  onClick={() => fetchAllTickets()}
+>
+  {loading ? "Loading..." : "Show LoanTicket"}
+</button>
+
+{selectedItem && (
+      <button
+        style={buttonStyle("#F59E0B", "#D97706")}
+        onClick={deposite_nft}
+      >
+        Deposit NFT
+      </button>
+)}
+
+{selectedTicket && (
+  <button
+  style={buttonStyle("#10B981", "#059669")}
+  onClick={() => exchange_ticket()}
+>
+  Exchange Ticket Against NFT
+</button>
+)}
     </div>
-  );
+
+    {loanTickets.length > 0 && (
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))",
+          gap: "2rem",
+        }}
+      >
+        {loanTickets.map((item) => (
+          <div
+            key={item.objectId}
+            style={{
+              border: "1px solid #e5e7eb",
+              borderRadius: "0.75rem",
+              backgroundColor: "white",
+              boxShadow: "0 4px 6px rgba(0, 0, 0, 0.1)",
+              cursor: "pointer",
+              transition: "transform 0.2s",
+            }}
+            onMouseOver={(e) => (e.currentTarget.style.transform = "translateY(-4px)")}
+            onMouseOut={(e) => (e.currentTarget.style.transform = "translateY(0)")}
+            onClick={async () => {
+              setSelectedTicket(item);
+            }}
+          >
+            <div style={{ padding: "1rem" }}>
+              <h3 style={{ fontSize: "1.1rem", margin: 0, fontWeight: 600, color: "#111827" }}>
+                {item.data?.objectId || "Unnamed NFT"}
+              </h3>
+            </div>
+          </div>
+        ))}
+      </div>
+    )}
+  
+    {/* NFT Grid */}
+    {kioskItems.length > 0 && (
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))",
+          gap: "2rem",
+        }}
+      >
+        {kioskItems.map((item) => (
+          <div
+            key={item.objectId}
+            style={{
+              border: "1px solid #e5e7eb",
+              borderRadius: "0.75rem",
+              backgroundColor: "white",
+              boxShadow: "0 4px 6px rgba(0, 0, 0, 0.1)",
+              cursor: "pointer",
+              transition: "transform 0.2s",
+            }}
+            onMouseOver={(e) => (e.currentTarget.style.transform = "translateY(-4px)")}
+            onMouseOut={(e) => (e.currentTarget.style.transform = "translateY(0)")}
+            onClick={async () => {
+              setSelectedItem(item);
+              setSelectedItemPolicy(null);
+              if (item.type) {
+                const fetchedPolicy = await fetchPolicyForItem(item.type);
+                setSelectedItemPolicy(fetchedPolicy);
+              } else {
+                setSelectedItemPolicy([]);
+              }
+            }}
+          >
+            {item.data?.display?.data?.image_url && (
+              <div style={{ width: "100%", height: "200px", overflow: "hidden" }}>
+                <img
+                  src={item.data.display.data.image_url}
+                  alt={item.data.display.data.name || "NFT"}
+                  style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                />
+              </div>
+            )}
+            <div style={{ padding: "1rem" }}>
+              <h3 style={{ fontSize: "1.1rem", margin: 0, fontWeight: 600, color: "#111827" }}>
+                {item.data?.display?.data?.name || "Unnamed NFT"}
+              </h3>
+              {item.data?.display?.data?.description && (
+                <p
+                  style={{
+                    marginTop: "0.5rem",
+                    fontSize: "0.875rem",
+                    color: "#6B7280",
+                    display: "-webkit-box",
+                    WebkitLineClamp: 2,
+                    WebkitBoxOrient: "vertical",
+                    overflow: "hidden",
+                  }}
+                >
+                  {item.data.display.data.description}
+                </p>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    )}
+  
+    {/* Selected Policy */}
+    {selectedItemPolicy && (
+      <div
+        style={{
+          marginTop: "2rem",
+          padding: "1rem",
+          border: "1px solid #d1d5db",
+          borderRadius: "0.5rem",
+          backgroundColor: "#F9FAFB",
+        }}
+      >
+        <h4 style={{ marginBottom: "0.5rem", color: "#374151" }}>
+          Transfer Policy for Selected Item:
+        </h4>
+        {selectedItemPolicy.length > 0 ? (
+          <pre style={{ fontSize: "0.875rem", color: "#111827", overflowX: "auto" }}>
+            {JSON.stringify(selectedItemPolicy, null, 2)}
+          </pre>
+        ) : (
+          <p style={{ color: "#6B7280" }}>No transfer policies found or item type is missing.</p>
+        )}
+      </div>
+    )}
+
+{selectedTicket && (
+      <div
+        style={{
+          marginTop: "2rem",
+          padding: "1rem",
+          border: "1px solid #d1d5db",
+          borderRadius: "0.5rem",
+          backgroundColor: "#F9FAFB",
+        }}
+      >
+        <h4 style={{ marginBottom: "0.5rem", color: "#374151" }}>
+          Transfer Policy for Selected Item:
+        </h4>
+        
+          <pre style={{ fontSize: "0.875rem", color: "#111827", overflowX: "auto" }}>
+            {JSON.stringify(selectedTicket, null, 2)}
+          </pre>
+      </div>
+    )}
+  </div>
+  )
 };
 
 export default ShowNfts;

@@ -1,15 +1,8 @@
 module lending::souk {
-    use sui::kiosk::{Self, Kiosk, KioskOwnerCap, PurchaseCap};
-    use sui::coin::{Self, Coin};
-    use sui::balance::{Self, Balance};
+    use sui::kiosk::{Self, Kiosk, KioskOwnerCap};
+    use sui::coin::{Coin};
     use sui::sui::SUI;
-    use sui::dynamic_object_field as dof;
-    use sui::transfer_policy::{Self, TransferPolicy, TransferRequest};
-    use sui::tx_context::{Self, TxContext};
-    use sui::object::{Self, ID, UID};
-    use sui::transfer;
-
-    public struct Phantom<T> has copy, drop, store {}
+    use sui::transfer_policy::{Self, TransferPolicy};
 
     // Stores protocol's Kiosk and capability
     public struct SoukCap has key, store {
@@ -19,13 +12,16 @@ module lending::souk {
     }
 
     /// Represents a claim to retrieve the NFT
+    #[allow(unused_type_parameter)]
     public struct LoanTicket<T> has key, store {
-    id: UID,
-    nft_type: Phantom<T>,
-    original_owner: address,
-    nft_id: ID,
-    min_price: u64,
-}
+        id: UID,
+        original_owner: address,
+        nft_id: ID,
+        min_price: u64,
+        borrower_kiosk_id: ID,
+        borrower_kiosk_cap_id: ID,
+        transfer_policy_id: ID,
+    }
 
 
     // Entry to transfer NFT to protocol by having user list and sell it to themselves,
@@ -66,10 +62,12 @@ module lending::souk {
         // Create a LoanTicket and return to user
         let ticket = LoanTicket<T> {
             id: object::new(ctx),
-            nft_type: Phantom {},
             original_owner: tx_context::sender(ctx),
             nft_id: nft_id,
-            min_price: min_price
+            min_price: min_price,
+            borrower_kiosk_id: object::id(borrower_kiosk),
+            borrower_kiosk_cap_id: object::id(borrower_kiosk_cap),
+            transfer_policy_id: object::id(policy),
         };
 
         transfer::transfer(ticket, tx_context::sender(ctx));
