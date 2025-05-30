@@ -2,9 +2,14 @@ module souk::protocol {
     use sui::kiosk::{Self, Kiosk, KioskOwnerCap};
     use sui::coin::{Self, Coin};
     use sui::sui::SUI;
-    use sui::transfer_policy::{Self, TransferPolicy, TransferPolicyCap};
+    use sui::transfer_policy::{Self, TransferPolicy};
     use sui::balance::{Self, Balance};
-    use sui::clock::timestamp_ms;
+
+    const EInsufficientMarketBalance: u64 = 0;
+    const ETotalBorrowedCannotExceedMaxLTV: u64 = 1;
+    const EPaymentDifferentFromMinPrice: u64 = 2;
+    const EPaymentDifferentFromSupplied: u64 = 2;
+
 
     public struct SoukMarketPlace has key {
         id: UID,
@@ -14,13 +19,39 @@ module souk::protocol {
     }
 
     #[allow(unused_type_parameter)]
-    public struct Market<T, C> has key, store {
+    public struct Market<T, phantom C> has key, store {
         id: UID,
         borrowing_tickets: vector<ID>,
         lending_tickets: vector<ID>,
         treasury: Balance<C>,
         // ... Total supplied, total debt, etc. dynammic updated
     }
+
+    public fun get_market_borrowing_tickets<T, C>(market: &Market<T, C>): &vector<ID> {
+        &market.borrowing_tickets
+    }
+
+    public fun get_market_lending_tickets<T, C>(market: &Market<T, C>): &vector<ID> {
+        &market.lending_tickets
+    }
+
+    public fun get_market_id<T, C>(market: &Market<T, C>): ID {
+        market.id.to_inner()
+    }
+
+    public fun get_basket_borrowing_tickets(basket: &Basket): &vector<ID> {
+        &basket.borrowing_tickets
+    }
+
+    public fun get_basket_lending_tickets(basket: &Basket): &vector<ID> {
+        &basket.lending_tickets
+    }
+    
+    public fun get_market_treasury<T, C>(market: &Market<T, C>): &Balance<C> {
+        &market.treasury
+    }
+
+
 
     public struct SoukOwnerCap has key, store {
         id: UID,
@@ -34,7 +65,7 @@ module souk::protocol {
     }
 
     #[allow(unused_type_parameter)]
-    public struct BorrowingTicket<T, C> has key, store {
+    public struct BorrowingTicket<T, phantom C> has key, store {
         id: UID,
         market_id: ID,
         
@@ -51,7 +82,7 @@ module souk::protocol {
     }
 
     #[allow(unused_type_parameter)]
-    public struct LendingTicket<T, C> has key, store {
+    public struct LendingTicket<T, phantom C> has key, store {
         id: UID,
         market_id: ID,
 
@@ -61,9 +92,7 @@ module souk::protocol {
         last_update_timestamp: u64
     }
 
-
-
-    public entry fun create_market<T: key + store, C: key + store>(
+    public entry fun create_market<T: key + store, C>(
         souk_owner_cap: SoukOwnerCap,
         souk_marketplace: &mut SoukMarketPlace,
         ctx: &mut TxContext
@@ -78,12 +107,28 @@ module souk::protocol {
         
         vector::push_back(&mut souk_marketplace.market_ids, market.id.to_inner());
 
-        transfer::transfer(market, ctx.sender());
+        transfer::share_object(market);
 
-        transfer::transfer(souk_owner_cap, ctx.sender());
+        transfer::public_transfer(souk_owner_cap, ctx.sender());
     }
 
-    public entry fun borrow<T: key + store, C: key + store>(
+    public entry fun borrow<T: key + store, C>(
+        market: &mut Market<T, C>,
+        ticket: &mut BorrowingTicket<T, C>,
+        amount_to_borrow: u64,
+        ctx: &mut TxContext
+    )
+    {
+        assert!(ticket.debt + amount_to_borrow <= ticket.max_ltv, ETotalBorrowedCannotExceedMaxLTV);
+        assert!(market.treasury.value() >= amount_to_borrow, EInsufficientMarketBalance);
+
+        let payment_balance = market.treasury.split(amount_to_borrow);
+        let payment = payment_balance.into_coin(ctx);
+
+        transfer::public_transfer(payment, ctx.sender());
+    }
+
+    public entry fun provide_nft_as_collateral<T: key + store, C>(
         borrower_kiosk: &mut Kiosk,
         borrower_kiosk_cap: &KioskOwnerCap,
         borrower_basket: &mut Basket,
@@ -95,6 +140,12 @@ module souk::protocol {
         payment: Coin<SUI>,
         ctx: &mut TxContext
         ) {
+
+        let supplied = payment.balance().value();
+
+        assert!(supplied == min_price, EPaymentDifferentFromMinPrice);
+
+        
         
         let purchase_cap = kiosk::list_with_purchase_cap<T>(
             borrower_kiosk,
@@ -119,7 +170,7 @@ module souk::protocol {
             nft_object
         );
 
-        let ticket = BorrowingTicket<T, Coin<SUI>> {
+        let ticket = BorrowingTicket<T, C> {
             id: object::new(ctx),
             market_id: market.id.to_inner(),
             nft: nft,
@@ -127,14 +178,16 @@ module souk::protocol {
             borrower_kiosk_id: object::id(borrower_kiosk),
             borrower_kiosk_cap_id: object::id(borrower_kiosk_cap),
             transfer_policy_id: object::id(policy),
-            max_ltv: 0,
+            max_ltv: 1000000,
             utilization_rate: 0,
             debt: 0,
             last_update_timestamp: 0
         };
 
         vector::push_back(&mut borrower_basket.borrowing_tickets, ticket.id.to_inner());
+        vector::push_back(&mut market.borrowing_tickets, ticket.id.to_inner());
         transfer::transfer(ticket, tx_context::sender(ctx));
+
 
     }
 
@@ -178,17 +231,19 @@ module souk::protocol {
 
     }
 
-    public entry fun lend<T: key + store, C: key + store>(
+    public entry fun lend<T: key + store, C>(
         marketplace: &mut SoukMarketPlace,
         market: &mut Market<T, C>,
-        borrower_basket: &mut Basket,
+        lender_basket: &mut Basket,
         amount: u64,
         payment: Coin<C>,
         ctx: &mut TxContext
         ) {
 
+            
             let supplied = payment.balance().value();
 
+            assert!(supplied == amount, EPaymentDifferentFromSupplied);
             coin::put(&mut market.treasury, payment);
 
             let ticket = LendingTicket<T, C> {
@@ -200,7 +255,8 @@ module souk::protocol {
                 market_id: market.id.to_inner(),
             };
 
-             vector::push_back(&mut borrower_basket.lending_tickets, ticket.id.to_inner());
+             vector::push_back(&mut lender_basket.lending_tickets, ticket.id.to_inner());
+             vector::push_back(&mut market.lending_tickets, ticket.id.to_inner());
              transfer::transfer(ticket, tx_context::sender(ctx));
         }
         
@@ -235,6 +291,12 @@ module souk::protocol {
 
         transfer::transfer(souk_owner_cap, ctx.sender())
 
+    }
+
+    #[test_only]
+    /// Wrapper of module initializer for testing
+    public fun test_init(ctx: &mut TxContext) {
+        init(ctx)
     }
 
     #[test]
@@ -276,7 +338,7 @@ module souk::protocol {
             let souk_owner_cap = scenario.take_from_sender<SoukOwnerCap>();
             let mut souk_marketplace = scenario.take_shared<SoukMarketPlace>();
 
-            create_market<Coin<SUI>, Coin<SUI>>(souk_owner_cap, &mut souk_marketplace, scenario.ctx());
+            create_market<Coin<SUI>, SUI>(souk_owner_cap, &mut souk_marketplace, scenario.ctx());
 
             test_scenario::return_shared<SoukMarketPlace>(souk_marketplace);            
         };
@@ -289,8 +351,8 @@ module souk::protocol {
 
         scenario.next_tx(admin);
         {
-            let market = scenario.take_from_sender<Market<Coin<SUI>, Coin<SUI>>>();
-            scenario.return_to_sender(market);
+            let market = scenario.take_shared<Market<Coin<SUI>, SUI>>();
+            test_scenario::return_shared<Market<Coin<SUI>, SUI>>(market);
         };
 
         scenario.end();

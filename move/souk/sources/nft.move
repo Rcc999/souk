@@ -15,6 +15,7 @@ module souk::nft {
     use sui::tx_context::{sender};
     use sui::transfer_policy::{Self};
     use sui::package::{Publisher};
+    use std::bool;
 
     public struct SoukNFT has key, store {
         id: UID,
@@ -58,6 +59,17 @@ module souk::nft {
             transfer::public_transfer(nft, recipient)
     }
 
+    public entry fun get_id(nft: &SoukNFT): ID {
+        nft.id.to_inner()
+    }
+
+    public entry fun create_kiosk(ctx: &mut TxContext) {
+        let (kiosk, kiosk_cap) = sui::kiosk::new(ctx);
+
+        transfer::public_transfer(kiosk, ctx.sender());
+        transfer::public_transfer(kiosk_cap, ctx.sender());
+    }
+
     fun init(otw: NFT, ctx: &mut TxContext) {
 
         let keys = vector[
@@ -95,10 +107,17 @@ module souk::nft {
 
     }
 
+    #[test_only]
+    /// Wrapper of module initializer for testing
+    public fun test_init(ctx: &mut TxContext) {
+        init(NFT {}, ctx)
+    }
+
+
     #[test]
     fun test_global() {
     use sui::test_scenario;
-    use sui::transfer_policy::{TransferPolicyCap};
+    use sui::transfer_policy::{TransferPolicy, TransferPolicyCap};
     let admin = @0x1;
     let user = @0x2;
 
@@ -138,11 +157,11 @@ module souk::nft {
         ) 
     };
 
+
     scenario.next_tx(admin);
-    {
-        let nft = scenario.take_from_sender<SoukNFT>();
-        scenario.return_to_sender(nft);
-    };
+    let nft = scenario.take_from_sender<SoukNFT>();
+    let nft_id = nft.id.to_inner();
+    scenario.return_to_sender(nft);
 
     scenario.next_tx(admin);
     {
@@ -154,6 +173,50 @@ module souk::nft {
     {
         let nft = scenario.take_from_sender<SoukNFT>();
         scenario.return_to_sender(nft);
+    };
+
+    scenario.next_tx(user);
+    {
+        create_kiosk(scenario.ctx());
+    };
+
+    scenario.next_tx(user);
+    {
+        let kiosk = scenario.take_from_sender<sui::kiosk::Kiosk>();
+        let kiosk_cap = scenario.take_from_sender<sui::kiosk::KioskOwnerCap>();
+
+        scenario.return_to_sender(kiosk);
+        scenario.return_to_sender(kiosk_cap);
+
+    };
+
+    scenario.next_tx(user);
+    {
+        let kiosk = scenario.take_from_sender<sui::kiosk::Kiosk>();
+        assert!(!sui::kiosk::is_locked(&kiosk, nft_id));
+        scenario.return_to_sender(kiosk)
+    };
+
+    scenario.next_tx(user);
+    {
+        let mut kiosk = scenario.take_from_sender<sui::kiosk::Kiosk>();
+        let kiosk_cap = scenario.take_from_sender<sui::kiosk::KioskOwnerCap>();
+
+        let policy = scenario.take_shared<TransferPolicy<SoukNFT>>();
+        let nft = scenario.take_from_sender<SoukNFT>();
+
+        sui::kiosk::lock<SoukNFT>(&mut kiosk, &kiosk_cap, &policy, nft);
+
+        scenario.return_to_sender(kiosk);
+        scenario.return_to_sender(kiosk_cap);
+        test_scenario::return_shared<TransferPolicy<SoukNFT>>(policy);
+    };
+
+    scenario.next_tx(user);
+    {
+        let kiosk = scenario.take_from_sender<sui::kiosk::Kiosk>();
+        assert!(sui::kiosk::is_locked(&kiosk, nft_id));
+        scenario.return_to_sender(kiosk)
     };
 
     scenario.end();
