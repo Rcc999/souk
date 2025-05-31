@@ -15,7 +15,6 @@ module souk::nft {
     use sui::tx_context::{sender};
     use sui::transfer_policy::{Self};
     use sui::package::{Publisher};
-    use std::bool;
 
     public struct SoukNFT has key, store {
         id: UID,
@@ -70,6 +69,7 @@ module souk::nft {
         transfer::public_transfer(kiosk_cap, ctx.sender());
     }
 
+    #[allow(lint(share_owned))]
     fun init(otw: NFT, ctx: &mut TxContext) {
 
         let keys = vector[

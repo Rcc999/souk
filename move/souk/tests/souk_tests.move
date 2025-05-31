@@ -2,11 +2,14 @@
 module souk::souk_tests;
 // uncomment this line to import the module
 use souk::nft::{SoukNFT};
-use souk::protocol::{SoukMarketPlace, SoukOwnerCap, Basket, Market};
+use souk::protocol::{SoukMarketPlace};
+use souk::ownership::{Self, SoukOwnerCap};
 use sui::coin::{Self, Coin};
 use sui::sui::SUI;
 use sui::kiosk::{Self, Kiosk, KioskOwnerCap};
-use souk::protocol::BorrowingTicket;
+
+use souk::markets::Market;
+use souk::tickets::{Basket, BorrowingTicket, LendingTicket};
 
 #[test]
 fun test_init_protocols() {
@@ -23,6 +26,7 @@ fun test_init_protocols() {
     {
         souk::nft::test_init(scenario.ctx());
         souk::protocol::test_init(scenario.ctx());
+        souk::ownership::test_init(scenario.ctx());
     };
 
 
@@ -32,7 +36,7 @@ fun test_init_protocols() {
         let souk_owner_cap = scenario.take_from_sender<SoukOwnerCap>();
         let mut souk_marketplace = scenario.take_shared<SoukMarketPlace>();
 
-        souk::protocol::create_market<SoukNFT, SUI>(souk_owner_cap, &mut souk_marketplace, scenario.ctx());
+        souk::protocol::register_market<SoukNFT, SUI>(souk_owner_cap, &mut souk_marketplace, scenario.ctx());
 
         test_scenario::return_shared<SoukMarketPlace>(souk_marketplace);
     };
@@ -67,13 +71,13 @@ fun test_init_protocols() {
     // Create a basket for the borrower
     scenario.next_tx(borrower);
     {
-        souk::protocol::create_basket(scenario.ctx());
+        souk::tickets::create_basket(scenario.ctx());
     };
 
     // Create a basket for the lender
     scenario.next_tx(lender);
     {
-        souk::protocol::create_basket(scenario.ctx());
+        souk::tickets::create_basket(scenario.ctx());
     };
 
     // Create a kiosk for the borrower
@@ -125,14 +129,14 @@ fun test_init_protocols() {
         let kiosk_cap = scenario.take_from_sender<KioskOwnerCap>();
         
         let mut basket = scenario.take_from_sender<Basket>();
-        let basket_tickets = souk::protocol::get_basket_borrowing_tickets(&basket);
+        let (basket_tickets, _) = souk::tickets::get_tickets_ids(&basket);
         assert!(vector::length(basket_tickets) == 0, 100);
 
         let policy = scenario.take_shared<TransferPolicy<SoukNFT>>();
         let mut souk_marketplace = scenario.take_shared<SoukMarketPlace>();
 
         let mut market = scenario.take_shared<Market<SoukNFT, SUI>>();
-        let market_tickets = souk::protocol::get_market_borrowing_tickets(&market);
+        let (market_tickets, _) = souk::markets::get_tickets_ids(&market);
         assert!(vector::length(market_tickets)== 0, 101); // or some error code
 
         let min_price = 10;
@@ -168,12 +172,12 @@ fun test_init_protocols() {
     scenario.next_tx(borrower);
     {
         let basket = scenario.take_from_sender<Basket>();
-        let basket_tickets = souk::protocol::get_basket_borrowing_tickets(&basket);
+        let (basket_tickets, _) = souk::tickets::get_tickets_ids(&basket);
         assert!(vector::length(basket_tickets) > 0, 100);
         let basket_ticket_id = *vector::borrow(basket_tickets, 0);
 
         let market = scenario.take_shared<Market<SoukNFT, SUI>>();
-        let market_tickets = souk::protocol::get_market_borrowing_tickets(&market);
+        let (market_tickets, _) = souk::markets::get_tickets_ids(&market);
         assert!(vector::length(market_tickets) > 0, 101); // or some error code
 
         let market_ticket_id = *vector::borrow(market_tickets, 0);
@@ -187,7 +191,6 @@ fun test_init_protocols() {
     // Test to lend
     scenario.next_tx(lender);
     {
-        let mut souk_marketplace = scenario.take_shared<SoukMarketPlace>();
         let mut basket = scenario.take_from_sender<Basket>();
         let mut market = scenario.take_shared<Market<SoukNFT, SUI>>();
 
@@ -198,10 +201,9 @@ fun test_init_protocols() {
         let payment = coin::split<SUI>(&mut coins, amount, scenario.ctx());
         scenario.return_to_sender(coins);
 
-        souk::protocol::lend(&mut souk_marketplace, &mut market, &mut basket, amount, payment, scenario.ctx());
+        souk::protocol::lend(&mut market, &mut basket, amount, payment, scenario.ctx());
 
         scenario.return_to_sender(basket);
-        test_scenario::return_shared<SoukMarketPlace>(souk_marketplace);
         test_scenario::return_shared<Market<SoukNFT, SUI>>(market);
     };
 
@@ -209,12 +211,12 @@ fun test_init_protocols() {
     scenario.next_tx(lender);
     {
         let basket = scenario.take_from_sender<Basket>();
-        let basket_tickets = souk::protocol::get_basket_lending_tickets(&basket);
+        let (_, basket_tickets) = souk::tickets::get_tickets_ids(&basket);
         assert!(vector::length(basket_tickets) > 0, 100);
         let basket_ticket_id = *vector::borrow(basket_tickets, 0);
 
         let market = scenario.take_shared<Market<SoukNFT, SUI>>();
-        let market_tickets = souk::protocol::get_market_lending_tickets(&market);
+        let (_, market_tickets) = souk::markets::get_tickets_ids(&market);
         assert!(vector::length(market_tickets) > 0, 101); // or some error code
 
         let market_ticket_id = *vector::borrow(market_tickets, 0);
