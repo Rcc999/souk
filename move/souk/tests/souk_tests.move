@@ -2,19 +2,19 @@
 module souk::souk_tests;
 // uncomment this line to import the module
 use souk::nft::{SoukNFT};
-use souk::protocol::{SoukMarketPlace};
-use souk::ownership::{Self, SoukOwnerCap};
+use souk::marketplace::{SoukMarketPlace};
+use souk::ownership::{SoukOwnerCap};
 use sui::coin::{Self, Coin};
 use sui::sui::SUI;
-use sui::kiosk::{Self, Kiosk, KioskOwnerCap};
+use sui::kiosk::{Kiosk, KioskOwnerCap};
 
 use souk::markets::Market;
-use souk::tickets::{Basket, BorrowingTicket, LendingTicket};
+use souk::tickets::{Basket, BorrowingTicket};
 
 #[test]
-fun test_init_protocols() {
+fun test_init_marketplaces() {
     use sui::test_scenario;
-    use sui::transfer_policy::{TransferPolicy, TransferPolicyCap};
+    use sui::transfer_policy::{TransferPolicy};
 
     let admin = @0x1;
     let borrower = @0x2;
@@ -25,7 +25,7 @@ fun test_init_protocols() {
     // Init contracts
     {
         souk::nft::test_init(scenario.ctx());
-        souk::protocol::test_init(scenario.ctx());
+        souk::marketplace::test_init(scenario.ctx());
         souk::ownership::test_init(scenario.ctx());
     };
 
@@ -36,7 +36,7 @@ fun test_init_protocols() {
         let souk_owner_cap = scenario.take_from_sender<SoukOwnerCap>();
         let mut souk_marketplace = scenario.take_shared<SoukMarketPlace>();
 
-        souk::protocol::register_market<SoukNFT, SUI>(souk_owner_cap, &mut souk_marketplace, scenario.ctx());
+        souk::marketplace::register_market<SoukNFT, SUI>(souk_owner_cap, &mut souk_marketplace, scenario.ctx());
 
         test_scenario::return_shared<SoukMarketPlace>(souk_marketplace);
     };
@@ -118,7 +118,7 @@ fun test_init_protocols() {
         // let mut market = scenario.take_shared<Market<SoukNFT, SUI>>();
 
         // let payment = sui::kiosk_test_utils::get_sui(100000000000000, scenario.ctx());
-        // souk::protocol::supply_to_market<SoukNFT, SUI>(&mut market, payment);
+        // souk::marketplace::supply_to_market<SoukNFT, SUI>(&mut market, payment);
         // test_scenario::return_shared<Market<SoukNFT, SUI>>(market);
     };
 
@@ -147,7 +147,7 @@ fun test_init_protocols() {
         scenario.return_to_sender(coins);
 
 
-        souk::protocol::provide_nft_as_collateral<SoukNFT, SUI>(
+        souk::marketplace::provide_nft_as_collateral<SoukNFT, SUI>(
             &mut kiosk,
             &kiosk_cap,
             &mut basket,
@@ -201,7 +201,7 @@ fun test_init_protocols() {
         let payment = coin::split<SUI>(&mut coins, amount, scenario.ctx());
         scenario.return_to_sender(coins);
 
-        souk::protocol::lend(&mut market, &mut basket, amount, payment, scenario.ctx());
+        souk::marketplace::lend(&mut market, &mut basket, amount, payment, scenario.ctx());
 
         scenario.return_to_sender(basket);
         test_scenario::return_shared<Market<SoukNFT, SUI>>(market);
@@ -237,7 +237,7 @@ fun test_init_protocols() {
         let mut ticket = scenario.take_from_sender<BorrowingTicket<SoukNFT, SUI>>();
         let mut market = scenario.take_shared<Market<SoukNFT, SUI>>();
 
-        souk::protocol::borrow<SoukNFT, SUI>(&mut market, &mut ticket, 10, scenario.ctx());
+        souk::marketplace::borrow<SoukNFT, SUI>(&mut market, &mut ticket, 10, scenario.ctx());
 
         scenario.return_to_sender(ticket);
         test_scenario::return_shared<Market<SoukNFT, SUI>>(market);

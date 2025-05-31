@@ -1,4 +1,4 @@
-module souk::protocol {
+module souk::marketplace {
     use sui::kiosk::{Self, Kiosk, KioskOwnerCap};
     use sui::coin::Coin;
     use sui::sui::SUI;
