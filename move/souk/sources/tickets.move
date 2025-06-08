@@ -6,24 +6,86 @@ module souk::tickets {
     const EDebtCannotBeNegative: u64 = 3;
     const ETicketNotFoundInBasket: u64 = 4;
 
+    public struct BorrowingPosition has key, store {
+        id: UID,
+        ticket_id: ID,
+        ltv: u64,
+        collateral_value: u64,
+        debt: u64,
+    }
 
+    public struct LendingPosition has key, store {
+        id: UID,
+        ticket_id: ID,
+        amount_supplied: u64,
+        to_claim: u64,
+        claimed: u64
+    }
 
     public struct BorrowingTicket<phantom T, phantom C> has key, store {
         id: UID,
         nft_id: ID,
         nft_min_price: u64,
-        max_ltv: u64,
-        utilization_rate: u64,
-        debt: u64,
         last_update_timestamp: u64
     }
 
     public struct LendingTicket<phantom T, phantom C> has key, store {
         id: UID,
-        amount_supplied: u64,
-        to_claim: u64,
-        claimed: u64,
         last_update_timestamp: u64
+    }
+
+    public fun get_borrowing_ticket_id<T, C>(ticket: &BorrowingTicket<T, C>) : ID {
+        ticket.id.to_inner()
+    }
+
+    public fun get_lending_ticket_id<T, C>(ticket: &LendingTicket<T, C>) : ID {
+        ticket.id.to_inner()
+    }
+
+    public fun get_borrowing_position_info(
+        position: &BorrowingPosition
+    ): (ID, ID, u64, u64, u64) {
+        (
+            position.id.to_inner(),
+            position.ticket_id,
+            position.ltv,
+            position.collateral_value,
+            position.debt
+        )
+    }
+
+    public fun get_lending_position_info(
+        position: &LendingPosition
+    ): (ID, ID, u64, u64, u64) {
+        (
+            position.id.to_inner(),
+            position.ticket_id,
+            position.amount_supplied,
+            position.to_claim,
+            position.claimed,
+        )
+    }
+
+    public fun burn_borrowing_position(
+        position: BorrowingPosition
+    )
+    {
+        let BorrowingPosition {id, ticket_id: _, collateral_value: _, ltv: _, debt: _} = position;
+        object::delete(id);
+    }
+
+    public fun burn_lending_position(
+        position: LendingPosition
+    )
+    {
+        let LendingPosition {id, ticket_id: _, amount_supplied: _, to_claim: _, claimed: _} = position;
+        object::delete(id);
+    }
+
+    public fun update_borrowing_position_collateral_value(position: &mut BorrowingPosition, new_collateral_value: u64) {
+        position.collateral_value = new_collateral_value;
+        let updated_ltv = souk::utils::compute_ltv(position.debt, position.collateral_value);
+        position.ltv = updated_ltv;
     }
 
     public struct Basket has key, store {
@@ -32,17 +94,9 @@ module souk::tickets {
         lending_tickets: vector<ID>,
     }
 
-    public fun add_borrowing_ticket(basket: &mut Basket, ticket_id: ID) {
-        vector::push_back(&mut basket.borrowing_tickets, ticket_id);
-    }
-
-    public fun add_lending_ticket(basket: &mut Basket, ticket_id: ID) {
-        vector::push_back(&mut basket.lending_tickets, ticket_id);
-    }
-
     public fun remove_borrowing_ticket<T, C>(basket: &mut Basket, ticket: BorrowingTicket<T, C>) {
         
-        let BorrowingTicket {id, nft_id: _, nft_min_price: _, max_ltv: _, utilization_rate: _, debt: _, last_update_timestamp: _} = ticket;
+        let BorrowingTicket {id, nft_id: _, nft_min_price: _, last_update_timestamp: _} = ticket;
         
         let ticket_id = id.to_inner();
         object::delete(id);
@@ -64,7 +118,7 @@ module souk::tickets {
 
     public fun remove_lending_ticket<T, C>(basket: &mut Basket, ticket: LendingTicket<T, C>) {
 
-        let LendingTicket {id, amount_supplied: _, to_claim: _, claimed: _, last_update_timestamp: _} = ticket;
+        let LendingTicket {id, last_update_timestamp: _} = ticket;
 
         let ticket_id = id.to_inner();
         object::delete(id);
@@ -95,76 +149,82 @@ module souk::tickets {
         transfer::transfer(basket, ctx.sender());
     }
 
-    #[allow(lint(self_transfer))]
     public fun create_borrowing_ticket<T: key + store, C>(
         basket: &mut Basket,
         nft_id: ID,
         nft_min_price: u64,
+        collateral_value: u64,
         ctx: &mut TxContext
-        ) : ID {
+        ) : (ID, BorrowingTicket<T, C>, BorrowingPosition) {
 
-        let max_ltv = souk::utils::compute_max_ltv();
 
         let ticket = BorrowingTicket<T, C> {
                 id: object::new(ctx),
                 nft_id: nft_id,
                 nft_min_price: nft_min_price,
-                max_ltv: max_ltv,
-                utilization_rate: 0,
-                debt: 0,
                 last_update_timestamp: 0
             };
-
+        
         let ticket_id = ticket.id.to_inner();
+        
+        let position = BorrowingPosition {
+            id: object::new(ctx),
+            ticket_id: ticket_id,
+            collateral_value: collateral_value,
+            ltv: 0,
+            debt: 0
+        };
 
-        souk::tickets::add_borrowing_ticket(basket, ticket.id.to_inner());
+        vector::push_back(&mut basket.borrowing_tickets, ticket_id);
 
-        transfer::public_transfer(ticket, tx_context::sender(ctx));
-
-        ticket_id
+        (ticket_id, ticket, position)
     }
 
-    #[allow(lint(self_transfer))]
     public fun create_lending_ticket<T: key + store, C>(
         basket: &mut Basket,
         amount_supplied: u64,
         ctx: &mut TxContext
-    ) : ID {
+    ) : (ID, LendingTicket<T, C>, LendingPosition) {
 
         let ticket = LendingTicket<T, C> {
             id:  object::new(ctx),
-            amount_supplied:  amount_supplied,
-            to_claim: 0,
-            claimed: 0,
             last_update_timestamp: 0,
         };
 
         let ticket_id = ticket.id.to_inner();
 
+        let position = LendingPosition{
+            id:  object::new(ctx),
+            ticket_id: ticket_id,
+            amount_supplied: amount_supplied,
+            to_claim: 0,
+            claimed: 0,
+        };
+
         vector::push_back(&mut basket.lending_tickets, ticket.id.to_inner());
 
-        transfer::public_transfer(ticket, tx_context::sender(ctx));
-
-        ticket_id
+        (ticket_id, ticket, position)
     }
 
-    public fun update_borrow_ticket<T, C>(
-        ticket: &mut BorrowingTicket<T, C>,
+    public fun update_borrow_ticket(
+        borrowing_position: &mut BorrowingPosition,
+        market_max_ltv: u64,
         amount_to_borrow: u64,
         amount_to_repay: u64,
-        timestamp: u64
     ) {
 
         assert!((amount_to_borrow == 0) || (amount_to_repay == 0), ECannotBorrowAndRepaySimultaneously);
         assert!((amount_to_borrow > 0) || (amount_to_repay > 0), ECannotBorrowOrRepayZeroAmount);
+
+        let updated_debt = borrowing_position.debt + amount_to_borrow - amount_to_repay;
+        let updated_ltv = souk::utils::compute_ltv(updated_debt, borrowing_position.collateral_value);
         
-        assert!(ticket.debt + amount_to_borrow <= ticket.max_ltv, EDebtCannotExceedMaxLTV);
-        assert!(ticket.debt - amount_to_repay >= 0, EDebtCannotBeNegative);
+        assert!(updated_ltv <= market_max_ltv, EDebtCannotExceedMaxLTV);
+        assert!(updated_debt >= 0, EDebtCannotBeNegative);
 
-        ticket.debt = ticket.debt + amount_to_borrow - amount_to_repay;
+        borrowing_position.debt = updated_debt;
 
-        ticket.utilization_rate = souk::utils::compute_utilization_rate(ticket.debt, ticket.max_ltv);
-        ticket.last_update_timestamp = timestamp;
+        borrowing_position.ltv = updated_ltv;
 
     }
 

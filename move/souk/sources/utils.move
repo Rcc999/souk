@@ -4,7 +4,7 @@ module souk::utils {
         1000000
     }
 
-    public fun compute_utilization_rate(debt: u64, max_ltv: u64): u64 {
+    public fun compute_ltv(debt: u64, max_ltv: u64): u64 {
         if (max_ltv == 0) {
             0
         } else {
