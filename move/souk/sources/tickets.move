@@ -12,6 +12,10 @@ module souk::tickets {
         ltv: u64,
         collateral_value: u64,
         debt: u64,
+
+        creation_timestamp: u64,        // When position was created
+        last_interest_update: u64,      // Last time interest was calculated
+        accrued_interest: u64,          // Accumulated unpaid interest
     }
 
     public struct LendingPosition has key, store {
@@ -19,7 +23,8 @@ module souk::tickets {
         ticket_id: ID,
         amount_supplied: u64,
         to_claim: u64,
-        claimed: u64
+        claimed: u64,
+        last_interest_update: u64,
     }
 
     public struct BorrowingTicket<phantom T, phantom C> has key, store {
@@ -44,33 +49,42 @@ module souk::tickets {
 
     public fun get_borrowing_position_info(
         position: &BorrowingPosition
-    ): (ID, ID, u64, u64, u64) {
+    ): (ID, ID, u64, u64, u64, u64, u64, u64) {
         (
             position.id.to_inner(),
             position.ticket_id,
             position.ltv,
             position.collateral_value,
-            position.debt
+            position.debt,
+            position.creation_timestamp,
+            position.last_interest_update,
+            position.accrued_interest,
         )
     }
 
     public fun get_lending_position_info(
         position: &LendingPosition
-    ): (ID, ID, u64, u64, u64) {
+    ): (ID, ID, u64, u64, u64, u64) {
         (
             position.id.to_inner(),
             position.ticket_id,
             position.amount_supplied,
             position.to_claim,
             position.claimed,
+            position.last_interest_update
         )
     }
+
+    public entry fun reset_to_claim(position: &mut LendingPosition) {
+        position.claimed = position.claimed + position.to_claim;
+    }
+
 
     public fun burn_borrowing_position(
         position: BorrowingPosition
     )
     {
-        let BorrowingPosition {id, ticket_id: _, collateral_value: _, ltv: _, debt: _} = position;
+        let BorrowingPosition {id, ticket_id: _, collateral_value: _, ltv: _, debt: _, creation_timestamp:_, last_interest_update:_, accrued_interest:_} = position;
         object::delete(id);
     }
 
@@ -78,7 +92,7 @@ module souk::tickets {
         position: LendingPosition
     )
     {
-        let LendingPosition {id, ticket_id: _, amount_supplied: _, to_claim: _, claimed: _} = position;
+        let LendingPosition {id, ticket_id: _, amount_supplied: _, to_claim: _, claimed: _, last_interest_update:_} = position;
         object::delete(id);
     }
 
@@ -166,13 +180,17 @@ module souk::tickets {
             };
         
         let ticket_id = ticket.id.to_inner();
-        
+        let current_time = tx_context::epoch_timestamp_ms(ctx);
+        // TODO: Do not hardcode param (maybe pass as args.)
         let position = BorrowingPosition {
             id: object::new(ctx),
             ticket_id: ticket_id,
             collateral_value: collateral_value,
             ltv: 0,
-            debt: 0
+            debt: 0,
+            creation_timestamp: current_time,
+            last_interest_update: current_time,
+            accrued_interest: 0,
         };
 
         vector::push_back(&mut basket.borrowing_tickets, ticket_id);
@@ -192,13 +210,15 @@ module souk::tickets {
         };
 
         let ticket_id = ticket.id.to_inner();
-
+        let current_time = tx_context::epoch_timestamp_ms(ctx);
+        // TODO: Do not hardcode param (maybe pass as args.)
         let position = LendingPosition{
             id:  object::new(ctx),
             ticket_id: ticket_id,
             amount_supplied: amount_supplied,
             to_claim: 0,
             claimed: 0,
+            last_interest_update: current_time,
         };
 
         vector::push_back(&mut basket.lending_tickets, ticket.id.to_inner());
@@ -239,5 +259,54 @@ module souk::tickets {
 
     public fun get_tickets_ids(basket: &Basket) : (&vector<ID>, &vector<ID>) {
         (&basket.borrowing_tickets, &basket.lending_tickets)
+    }
+
+    // Calculate and accrue interest for borrowing position
+    public fun accrue_borrowing_interest(
+        position: &mut BorrowingPosition,
+        current_timestamp: u64,
+        interest_rate_bp: u64  // Annual rate in basis points
+    ) {
+        if (position.last_interest_update == 0) {
+            position.last_interest_update = current_timestamp;
+            return
+        };
+        
+        let time_elapsed = current_timestamp - position.last_interest_update;
+        let interest = souk::utils::compute_accrued_interest(
+            position.debt,
+            interest_rate_bp,
+            time_elapsed
+        );
+        
+        position.accrued_interest = position.accrued_interest + interest;
+        position.debt = position.debt + interest;
+        position.last_interest_update = current_timestamp;
+        
+        // Recalculate LTV with new debt
+        let updated_ltv = souk::utils::compute_ltv(position.debt, position.collateral_value);
+        position.ltv = updated_ltv;
+    }
+
+    // Calculate and accrue earnings for lending position
+    public fun accrue_lending_earnings(
+        position: &mut LendingPosition,
+        current_timestamp: u64,
+        interest_rate_bp: u64,  // Annual rate in basis points
+    ) {
+        if (position.last_interest_update == 0) {
+            position.last_interest_update = current_timestamp;
+            return
+        };
+        
+        let time_elapsed = current_timestamp - position.last_interest_update;
+        let earnings = souk::utils::compute_accrued_interest(
+            position.amount_supplied,
+            interest_rate_bp,
+            time_elapsed
+        );
+        
+        position.to_claim = position.to_claim + earnings;
+        position.last_interest_update = current_timestamp;
     }
 }

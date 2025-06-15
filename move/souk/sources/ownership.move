@@ -10,11 +10,4 @@ module souk::ownership {
 
         transfer::public_transfer(souk_owner_cap, ctx.sender());
     }
-
-    #[test_only]
-    /// Wrapper of module initializer for testing
-    public fun test_init(ctx: &mut TxContext) {
-        init(ctx)
-    }
-
 }
