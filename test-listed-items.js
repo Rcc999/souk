@@ -36,6 +36,104 @@ function mistToSui(mistAmount) {
 }
 
 /**
+ * Parse royalty percentage from chain_state
+ * @param {Object} chainState - The chain_state object from collection
+ * @returns {number} Royalty percentage (e.g., 5 for 5%)
+ */
+function parseRoyaltyFromChainState(chainState) {
+  try {
+    if (!chainState) return 0;
+
+    // Check different possible structures
+    if (chainState.rules && Array.isArray(chainState.rules)) {
+      for (const rule of chainState.rules) {
+        // Check various possible structures for royalty
+        if (
+          rule.rule_type === "royalty_rule" ||
+          rule.type === "royalty_rule" ||
+          (rule.rule && rule.rule.royalty_bp !== undefined) ||
+          rule.royalty_bp !== undefined
+        ) {
+          const royaltyBp =
+            rule.rule?.royalty_bp ||
+            rule.royalty_bp ||
+            rule.rule?.royalty ||
+            rule.royalty ||
+            0;
+          return royaltyBp / 100; // Convert basis points to percentage
+        }
+      }
+    }
+
+    // Check if there's a direct royalty field
+    if (chainState.royalty_bp !== undefined) {
+      return chainState.royalty_bp / 100;
+    }
+
+    // Check transfer_policies array (most common structure)
+    if (
+      chainState.transfer_policies &&
+      Array.isArray(chainState.transfer_policies)
+    ) {
+      for (const policy of chainState.transfer_policies) {
+        if (policy.rules && Array.isArray(policy.rules)) {
+          for (const rule of policy.rules) {
+            if (rule.type === "royalty_rule" && rule.amount_bp !== undefined) {
+              return rule.amount_bp / 100; // Convert basis points to percentage
+            }
+          }
+        }
+      }
+    }
+
+    // Check for other possible structures
+    if (chainState.transfer_policy && chainState.transfer_policy.rules) {
+      const rules = chainState.transfer_policy.rules;
+      for (const rule of rules) {
+        if (rule.royalty_bp !== undefined) {
+          return rule.royalty_bp / 100;
+        }
+      }
+    }
+
+    return 0;
+  } catch (error) {
+    console.error("Error parsing royalty from chain_state:", error);
+    return 0;
+  }
+}
+
+/**
+ * Calculate full purchase price including commission and royalties
+ * @param {number} basePrice - Base price in SUI
+ * @param {number} royaltyPercent - Royalty percentage (e.g., 5 for 5%)
+ * @returns {number} Full purchase price in SUI
+ */
+function calculateFullPrice(basePrice, royaltyPercent = 0) {
+  const commissionPercent = 3; // Tradeport's flat 3% fee
+  const totalFeePercent = commissionPercent + royaltyPercent;
+  return basePrice * (1 + totalFeePercent / 100);
+}
+
+/**
+ * Filter bids to only include logical ones within a threshold of the floor price
+ * @param {Array} bids - Array of bid objects
+ * @param {number} floorPrice - Floor price in SUI
+ * @param {number} thresholdPercent - Maximum percentage below floor price (default: 30%)
+ * @returns {Array} Filtered array of logical bids
+ */
+function filterLogicalBids(bids, floorPrice, thresholdPercent = 30) {
+  if (!bids || bids.length === 0 || floorPrice === 0) return bids;
+
+  const minPrice = floorPrice * (1 - thresholdPercent / 100);
+
+  return bids.filter((bid) => {
+    const bidPrice = mistToSui(bid.price);
+    return bidPrice >= minPrice;
+  });
+}
+
+/**
  * Query collection info and bids for instant sell data
  * @param {string} collectionId - The collection ID (UUID format)
  * @returns {Promise<Object>} Collection instant sell data
@@ -44,7 +142,7 @@ async function getInstantSellData(collectionId) {
   try {
     // Get collection info with current floor price and collection bids in parallel
     const [collectionResponse, bidsResponse] = await Promise.all([
-      // Get collection info including current floor price
+      // Get collection info including current floor price and chain_state for royalty info
       graphqlClient.request(
         gql`
           query fetchCollectionInfo($collection_id: uuid!) {
@@ -56,6 +154,7 @@ async function getInstantSellData(collectionId) {
                 floor
                 volume
                 usd_volume
+                chain_state
               }
             }
           }
@@ -65,19 +164,25 @@ async function getInstantSellData(collectionId) {
         },
       ),
 
-      // Get collection bids
+      // Get collection bids with total count
       graphqlClient.request(
         gql`
           query fetchCollectionBids(
             $where: bids_bool_exp!
             $order_by: [bids_order_by!]
+            $limit: Int
           ) {
             sui {
-              bids(where: $where, order_by: $order_by) {
+              bids(where: $where, order_by: $order_by, limit: $limit) {
                 price
                 bidder
                 remaining_count
                 expires_at
+              }
+              bids_aggregate(where: $where) {
+                aggregate {
+                  count
+                }
               }
             }
           }
@@ -89,6 +194,7 @@ async function getInstantSellData(collectionId) {
             type: { _eq: "collection" },
           },
           order_by: [{ price: "desc" }],
+          limit: 25, // Set back to 25 since that's the API limit anyway
         },
       ),
     ]);
@@ -103,19 +209,34 @@ async function getInstantSellData(collectionId) {
 
     const collection = collectionResponse.sui.collections[0];
     const bids = bidsResponse.sui.bids || [];
+    const totalBidsCount =
+      bidsResponse.sui.bids_aggregate?.aggregate?.count || 0;
 
-    // Get the current floor price directly from the collection data
-    const floorPrice = mistToSui(collection.floor || 0);
+    // Get the current base floor price from the collection data
+    const baseFloorPrice = mistToSui(collection.floor || 0);
 
-    const totalBids = bids.length;
-    const instantSellPrice = totalBids > 0 ? mistToSui(bids[0].price) : 0;
+    // Parse royalty from chain_state
+    const royaltyPercent = parseRoyaltyFromChainState(collection.chain_state);
+
+    // Calculate full floor price including commission and royalties
+    const fullFloorPrice = calculateFullPrice(baseFloorPrice, royaltyPercent);
+
+    // Filter to only logical bids (within 30% of floor price)
+    const logicalBids = filterLogicalBids(bids, baseFloorPrice, 30);
+
+    const instantSellPrice = bids.length > 0 ? mistToSui(bids[0].price) : 0;
 
     return {
       collectionTitle: collection.title,
-      floorPrice,
-      totalBids,
+      baseFloorPrice,
+      fullFloorPrice,
+      royaltyPercent,
+      totalBids: totalBidsCount,
+      displayedBids: bids.length,
+      logicalBids: logicalBids.length,
       instantSellPrice,
       allBids: bids,
+      logicalBidsOnly: logicalBids,
     };
   } catch (error) {
     console.error("Error:", error.message);
@@ -261,16 +382,24 @@ async function main() {
 
   if (data) {
     console.log(`Collection: ${data.collectionTitle}`);
-    console.log(`Floor Price: ${data.floorPrice.toFixed(4)} SUI`);
-    console.log(`Total Active Collection Bids: ${data.totalBids}`);
+    console.log(`Base Floor Price: ${data.baseFloorPrice.toFixed(4)} SUI`);
+    console.log(
+      `Full Floor Price (with fees): ${data.fullFloorPrice.toFixed(4)} SUI`,
+    );
+    console.log(
+      `Royalty: ${data.royaltyPercent}% + Commission: 3% = Total Fees: ${(data.royaltyPercent + 3).toFixed(1)}%`,
+    );
+    console.log(
+      `Total Active Collection Bids: ${data.totalBids} (showing top ${data.displayedBids}, logical: ${data.logicalBids})`,
+    );
     console.log(
       `Instant Sell Price: ${data.instantSellPrice > 0 ? data.instantSellPrice.toFixed(4) + " SUI" : "No bids available"}`,
     );
 
-    // Display all active collection bids
-    if (data.allBids && data.allBids.length > 0) {
-      console.log("\n=== All Active Collection Bids ===");
-      data.allBids.forEach((bid, index) => {
+    // Display logical collection bids only
+    if (data.logicalBidsOnly && data.logicalBidsOnly.length > 0) {
+      console.log("\n=== Logical Collection Bids (within 30% of floor) ===");
+      data.logicalBidsOnly.forEach((bid, index) => {
         const price = mistToSui(bid.price);
         const expiresAt = bid.expires_at
           ? new Date(bid.expires_at).toLocaleString()
@@ -282,37 +411,56 @@ async function main() {
         );
       });
 
-      // Show liquidity analysis
-      console.log("\n=== Liquidity Analysis ===");
-      const totalLiquidity = data.allBids.reduce(
+      // Show threshold info
+      const minLogicalPrice = data.baseFloorPrice * 0.7; // 30% below floor
+      console.log(
+        `\nNote: Only showing bids >= ${minLogicalPrice.toFixed(4)} SUI (70% of floor price)`,
+      );
+    } else {
+      console.log("\n=== No Logical Collection Bids Found ===");
+      console.log("All bids are more than 30% below the floor price");
+    }
+
+    // Show liquidity analysis for logical bids only
+    if (data.logicalBidsOnly && data.logicalBidsOnly.length > 0) {
+      console.log("\n=== Logical Bids Liquidity Analysis ===");
+      const logicalLiquidity = data.logicalBidsOnly.reduce(
         (sum, bid) => sum + mistToSui(bid.price) * bid.remaining_count,
         0,
       );
-      const totalItems = data.allBids.reduce(
+      const logicalItems = data.logicalBidsOnly.reduce(
         (sum, bid) => sum + bid.remaining_count,
         0,
       );
-      const avgPrice = totalLiquidity / totalItems;
+      const avgLogicalPrice = logicalLiquidity / logicalItems;
 
-      console.log(`Total items that can be instantly sold: ${totalItems}`);
+      console.log(`Logical items that can be instantly sold: ${logicalItems}`);
       console.log(
-        `Total liquidity available: ${totalLiquidity.toFixed(4)} SUI`,
+        `Logical liquidity available: ${logicalLiquidity.toFixed(4)} SUI`,
       );
-      console.log(`Average instant sell price: ${avgPrice.toFixed(4)} SUI`);
-      console.log(`Highest bid: ${data.instantSellPrice.toFixed(4)} SUI`);
+      console.log(
+        `Average logical instant sell price: ${avgLogicalPrice.toFixed(4)} SUI`,
+      );
+      console.log(
+        `Highest logical bid: ${data.instantSellPrice.toFixed(4)} SUI`,
+      );
+      console.log(`Base floor price: ${data.baseFloorPrice.toFixed(4)} SUI`);
+      console.log(
+        `Full floor price (website): ${data.fullFloorPrice.toFixed(4)} SUI`,
+      );
 
-      if (data.allBids.length >= 5) {
-        const topFiveLiquidity = data.allBids
+      if (data.logicalBidsOnly.length >= 5) {
+        const topFiveLogicalLiquidity = data.logicalBidsOnly
           .slice(0, 5)
           .reduce(
             (sum, bid) => sum + mistToSui(bid.price) * bid.remaining_count,
             0,
           );
-        const topFiveItems = data.allBids
+        const topFiveLogicalItems = data.logicalBidsOnly
           .slice(0, 5)
           .reduce((sum, bid) => sum + bid.remaining_count, 0);
         console.log(
-          `Top 5 bids: ${topFiveItems} items worth ${topFiveLiquidity.toFixed(4)} SUI`,
+          `Top 5 logical bids: ${topFiveLogicalItems} items worth ${topFiveLogicalLiquidity.toFixed(4)} SUI`,
         );
       }
     }
