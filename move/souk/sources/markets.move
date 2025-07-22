@@ -20,14 +20,6 @@ module souk::markets {
         lending_tickets: vector<ID>,
         treasury: Balance<C>,
         max_ltv: u64,
-
-        base_interest_rate: u64,        // Annual rate in basis points (e.g., 500 = 5%)
-        ltv_multiplier: u64,            // LTV risk multiplier (e.g., 200 = 2x)
-        utilization_multiplier: u64,    // Utilization multiplier (e.g., 100 = 1x)
-        time_factor: u64,               // Daily time penalty in basis points (e.g., 1 = 0.01%)
-        max_time_penalty: u64,          // Cap on time penalty (e.g., 500 = 5%)
-        total_borrowed: u64,            // Track total borrowed amount
-        total_supplied: u64,            // Track total supplied amount
     }
 
     public fun create_market_key<T, C>() : (MarketKey) {
@@ -39,20 +31,12 @@ module souk::markets {
 
     public fun create_market<T, C>(_soc: &mut SoukOwnerCap, ctx: &mut TxContext): ID {
 
-        // TODO: Pass as arguments the params
         let market = Market<T, C> {
             id: object::new(ctx),
             borrowing_tickets: vector::empty<ID>(),
             lending_tickets: vector::empty<ID>(),
             treasury: balance::zero<C>(),
             max_ltv: 0,
-            base_interest_rate: 0,
-            ltv_multiplier: 0,
-            utilization_multiplier: 0,
-            time_factor: 0,
-            max_time_penalty: 0,
-            total_borrowed: 0,
-            total_supplied: 0,
         };
 
         let market_id = market.id.to_inner();
@@ -60,22 +44,6 @@ module souk::markets {
         transfer::share_object(market);
         
         market_id
-    }
-
-    public fun get_market_info<T, C>(market: &mut Market<T, C>) : (
-        ID, u64, u64, u64, u64, u64, u64, u64, u64
-    ) {
-        (
-            market.id.to_inner(),
-            market.max_ltv,
-            market.base_interest_rate,
-            market.ltv_multiplier,
-            market.utilization_multiplier,
-            market.time_factor,
-            market.max_time_penalty,
-            market.total_borrowed,
-            market.total_supplied
-        )
     }
 
     public entry fun update_market_max_ltv<T: key + store, C>(
@@ -145,48 +113,6 @@ module souk::markets {
         };
 
         assert!(0==1, ETicketNotFoundInMarket);
-    }
-
-    // Get market utilization ratio
-    public fun get_utilization_ratio<T, C>(market: &Market<T, C>): u64 {
-        souk::utils::compute_utilization_ratio(market.total_borrowed, market.total_supplied)
-    }
-
-    // Update market totals when lending
-    public fun add_to_total_supplied<T, C>(market: &mut Market<T, C>, amount: u64) {
-        market.total_supplied = market.total_supplied + amount;
-    }
-
-    // Update market totals when borrowing
-    public fun add_to_total_borrowed<T, C>(market: &mut Market<T, C>, amount: u64) {
-        market.total_borrowed = market.total_borrowed + amount;
-    }
-
-    // Update market totals when repaying
-    public fun subtract_from_total_borrowed<T, C>(market: &mut Market<T, C>, amount: u64) {
-        market.total_borrowed = market.total_borrowed - amount;
-    }
-
-    // Update market totals when withdrawing lending
-    public fun subtract_from_total_supplied<T, C>(market: &mut Market<T, C>, amount: u64) {
-        market.total_supplied = market.total_supplied - amount;
-    }
-
-    // Admin function to set market parameters
-    public entry fun set_market_interest_params<T, C>(
-        _soc: &mut SoukOwnerCap,
-        market: &mut Market<T, C>,
-        base_rate: u64,
-        ltv_multiplier: u64,
-        utilization_multiplier: u64,
-        time_factor: u64,
-        max_time_penalty: u64
-    ) {
-        market.base_interest_rate = base_rate;
-        market.ltv_multiplier = ltv_multiplier;
-        market.utilization_multiplier = utilization_multiplier;
-        market.time_factor = time_factor;
-        market.max_time_penalty = max_time_penalty;
     }
 
 }
