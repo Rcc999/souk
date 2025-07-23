@@ -1,5 +1,9 @@
 module souk::tickets {
 
+    use sui::object::{Self, UID, ID};
+    use sui::tx_context::{TxContext};
+    use souk::utils;
+
     const ECannotBorrowAndRepaySimultaneously: u64 = 0;
     const ECannotBorrowOrRepayZeroAmount: u64 = 1;
     const EDebtCannotExceedMaxLTV: u64 = 2;
@@ -12,6 +16,7 @@ module souk::tickets {
         ltv: u64,
         collateral_value: u64,
         debt: u64,
+        borrowed: u64
     }
 
     public struct LendingPosition has key, store {
@@ -42,15 +47,56 @@ module souk::tickets {
         ticket.id.to_inner()
     }
 
+    public fun get_borrowing_ticket_ids(basket: &Basket) : &vector<ID> {
+        &basket.borrowing_tickets
+    }
+
+    public fun get_lending_ticket_ids(basket: &Basket) : &vector<ID> {
+        &basket.lending_tickets
+    }
+
+    public fun get_borrowed(position: &BorrowingPosition): u64 {
+    position.borrowed
+    }
+
+    public fun get_amount_supplied(position: &LendingPosition): u64 {
+        position.amount_supplied
+    }
+
+    public fun get_to_claim(position: &LendingPosition): u64 {
+        position.to_claim
+    }
+
+    public fun get_ltv(position: &BorrowingPosition): u64 {
+        position.ltv
+    }
+
+    public fun get_debt(position: &BorrowingPosition): u64 {
+        position.debt
+    }
+
+    public fun get_collateral_value(position: &BorrowingPosition): u64 {
+        position.collateral_value
+    }
+
+    public fun add_to_debt(position: &mut BorrowingPosition, interest: u64) {
+    position.debt = position.debt + interest;
+    }
+
+    public fun add_to_claim(position: &mut LendingPosition, interest: u64) {
+    position.to_claim = position.to_claim + interest;
+}
+
     public fun get_borrowing_position_info(
         position: &BorrowingPosition
-    ): (ID, ID, u64, u64, u64) {
+    ): (ID, ID, u64, u64, u64, u64) {
         (
             position.id.to_inner(),
             position.ticket_id,
             position.ltv,
             position.collateral_value,
-            position.debt
+            position.debt,
+            position.borrowed
         )
     }
 
@@ -70,7 +116,7 @@ module souk::tickets {
         position: BorrowingPosition
     )
     {
-        let BorrowingPosition {id, ticket_id: _, collateral_value: _, ltv: _, debt: _} = position;
+        let BorrowingPosition {id, ticket_id: _, collateral_value: _, ltv: _, debt: _, borrowed: _} = position;
         object::delete(id);
     }
 
@@ -111,7 +157,7 @@ module souk::tickets {
             i = i + 1;
         };
 
-        assert!(0==1, ETicketNotFoundInBasket);
+        assert!(false, ETicketNotFoundInBasket);
 
         // TODO: raise error if not found
     }
@@ -134,7 +180,7 @@ module souk::tickets {
         };
         // TODO: raise error if not found
 
-        assert!(0==1, ETicketNotFoundInBasket);
+        assert!(false, ETicketNotFoundInBasket);
     }
 
     #[allow(lint(self_transfer))]
@@ -172,7 +218,8 @@ module souk::tickets {
             ticket_id: ticket_id,
             collateral_value: collateral_value,
             ltv: 0,
-            debt: 0
+            debt: 0,
+            borrowed: 0,
         };
 
         vector::push_back(&mut basket.borrowing_tickets, ticket_id);

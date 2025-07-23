@@ -3,11 +3,18 @@ module souk::markets {
     use std::type_name::TypeName;
     use sui::balance::{Self, Balance};
     use sui::coin::{Self, Coin};
+    use sui::clock::{Clock};
+    use sui::tx_context::{TxContext};
+    use souk::utils;
+    use souk::marketplace;
 
     use souk::ownership::SoukOwnerCap;
 
     const EInsufficientMarketBalance: u64 = 0;
     const ETicketNotFoundInMarket: u64 = 1;
+
+    const LIQUIDATION_THRESHOLD: u64 = 60_000_000; // 60% LTV in basis points
+    const APR_DELTA_THRESHOLD: u64 = 100_000; // 0.1% threshold for APR updates
 
     public struct MarketKey has copy, drop, store {
         nft_type: TypeName,
@@ -20,6 +27,15 @@ module souk::markets {
         lending_tickets: vector<ID>,
         treasury: Balance<C>,
         max_ltv: u64,
+        optimal_utilisation_rate: u64,
+        utilisation_rate: u64,
+        base_variable_borrow_rate: u64,
+        variable_rate_slope1: u64,
+        variable_rate_slope2: u64,
+        total_borrowed: u64,
+        total_supplied: u64,
+        current_apr: u64,
+        last_updated_apr: u64,
     }
 
     public fun create_market_key<T, C>() : (MarketKey) {
@@ -37,6 +53,15 @@ module souk::markets {
             lending_tickets: vector::empty<ID>(),
             treasury: balance::zero<C>(),
             max_ltv: 0,
+            optimal_utilisation_rate: 80_000_000,
+            utilisation_rate: 0,
+            base_variable_borrow_rate: 2_000_000,
+            variable_rate_slope1: 4_000_000,
+            variable_rate_slope2: 60_000_000,
+            total_borrowed: 0,
+            total_supplied: 0,
+            current_apr: 2_000_000,
+            last_updated_apr: 0,
         };
 
         let market_id = market.id.to_inner();
@@ -86,6 +111,82 @@ module souk::markets {
         market.max_ltv
     }
 
+    public fun get_total_borrowed<T, C>(market: &Market<T, C>): u64 {
+        market.total_borrowed
+    }
+
+    public fun get_total_supplied<T, C>(market: &Market<T, C>): u64 {
+        market.total_supplied
+    }
+
+    public fun get_treasury_value<T, C>(market: &Market<T, C>): u64 {
+        market.treasury.value()
+    }
+
+    public fun update_total_borrowed<T, C>(market: &mut Market<T, C>, new_total: u64) {
+        market.total_borrowed = new_total;
+    }
+
+    public fun update_total_supplied<T, C>(market: &mut Market<T, C>, new_total: u64) {
+        market.total_supplied = new_total;
+    }
+
+    public fun get_liquidation_threshold(): u64 {
+        LIQUIDATION_THRESHOLD
+    }
+
+    public fun get_apr_delta_threshold(): u64 {
+        APR_DELTA_THRESHOLD
+    }
+
+    public fun get_optimal_utilisation_rate<T, C>(market: &Market<T, C>): u64 {
+        market.optimal_utilisation_rate
+    }
+
+    public fun get_base_variable_borrow_rate<T, C>(market: &Market<T, C>): u64 {
+        market.base_variable_borrow_rate
+    }
+
+    public fun get_variable_rate_slope1<T, C>(market: &Market<T, C>): u64 {
+        market.variable_rate_slope1
+    }
+
+    public fun get_variable_rate_slope2<T, C>(market: &Market<T, C>): u64 {
+        market.variable_rate_slope2
+    }
+
+    public fun get_current_apr<T, C>(market: &Market<T, C>): u64 {
+        market.current_apr
+    }
+
+    public fun get_last_updated_apr<T, C>(market: &Market<T, C>): u64 {
+        market.last_updated_apr
+    }
+
+    public fun update_last_updated_apr<T, C>(market: &mut Market<T, C>, new_timestamp: u64) {
+        market.last_updated_apr = new_timestamp;
+    }
+
+    public fun get_borrowing_tickets<T, C>(market: &Market<T, C>): &vector<ID> {
+    &market.borrowing_tickets
+    }
+
+    public fun get_lending_tickets<T, C>(market: &Market<T, C>): &vector<ID> {
+    &market.lending_tickets
+    }
+
+    public fun set_current_apr<T, C>(market: &mut Market<T, C>, value: u64) {
+    market.current_apr = value;
+    }
+
+    public fun set_last_updated_apr<T, C>(market: &mut Market<T, C>, value: u64) {
+        market.last_updated_apr = value;
+    }
+    
+    public fun set_utilisation_rate<T, C>(market: &mut Market<T, C>, value: u64) {
+        market.utilisation_rate = value;
+    }
+
     public fun remove_borrowing_ticket<T, C>(market: &mut Market<T, C>, ticket_id: ID) {
         
         let len = vector::length(&market.borrowing_tickets);
@@ -114,5 +215,6 @@ module souk::markets {
 
         assert!(0==1, ETicketNotFoundInMarket);
     }
+
 
 }
